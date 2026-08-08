@@ -1,17 +1,17 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from 'api-loggers';
 
 import { EventEmitter } from 'node:events';
 import { RedisConfig } from './types.js';
+import { defaultLogger, LoggerLike } from './logger.js';
 
 export class PubSub extends EventEmitter {
   private publisher: RedisClientWrapper;
   private subscriber: RedisClientWrapper | null = null;
-  private logger: Logger;
+  private logger: LoggerLike;
   private subscriptions: Map<string, Set<(data: any) => void>> = new Map();
   private patternSubscriptions: Map<string, Set<(data: any) => void>> = new Map();
 
-  constructor(publisher: RedisClientWrapper, logger: Logger) {
+  constructor(publisher: RedisClientWrapper, logger: LoggerLike = defaultLogger) {
     super();
     this.publisher = publisher;
     this.logger = logger.child({ component: 'PubSub' });

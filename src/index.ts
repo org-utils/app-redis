@@ -7,10 +7,6 @@ export { HealthChecker } from './health.js';
 
 // Re-export logger types for convenience
 
-import { createLogger } from 'api-loggers';
-
-export type { Logger, LoggerOptions } from 'api-loggers';
-
 
 // Error exports
 export { RedisError } from './errors.js';
@@ -49,6 +45,4 @@ export default {
   PubSub,
   DistributedLock,
   HealthChecker,
-  createLogger,
 };
-export { createLogger };

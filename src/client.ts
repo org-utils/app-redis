@@ -1,18 +1,32 @@
 import Redis, { Cluster, Redis as RedisClient, RedisOptions } from 'ioredis';
-import { RedisConfig } from './types.js';
-import { Logger } from 'api-loggers';
 
 import { RedisError } from './errors.js';
+import type { RedisConfig } from './types.js';
+import { defaultLogger, type LoggerLike } from './logger.js';
+export interface RedisClientOptions { config: RedisConfig; logger?: LoggerLike; }
+
+
 
 export class RedisClientWrapper {
   private client: RedisClient | Cluster;
   private config: RedisConfig;
-  private logger: Logger;
+  // private logger: Logger;
   private isReady: boolean = false;
+  private readonly logger: LoggerLike;
 
-  constructor(config: RedisConfig, logger: Logger) {
+  // constructor(config: RedisConfig, logger: Logger) {
+  //   this.config = config;
+  //   this.logger = logger.child({ component: 'RedisClient' });
+  //   this.client = this.createClient();
+  //   this.setupEventHandlers();
+  // }
+  constructor(config: RedisConfig, logger: LoggerLike = defaultLogger) {
     this.config = config;
-    this.logger = logger.child({ component: 'RedisClient' });
+
+    this.logger = logger.child({
+      component: "RedisClient",
+    });
+
     this.client = this.createClient();
     this.setupEventHandlers();
   }
