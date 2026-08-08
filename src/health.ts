@@ -1,5 +1,6 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from 'api-loggers';
+import { LoggerLike } from './logger.js';
+
 
 
 export interface HealthStatus {
@@ -16,12 +17,12 @@ export interface HealthStatus {
 
 export class HealthChecker {
   private client: RedisClientWrapper;
-  private logger: Logger;
+  private logger: LoggerLike;
   private timer: NodeJS.Timeout | null = null;
   private callbacks: ((status: HealthStatus) => void)[] = [];
   private lastStatus: HealthStatus | null = null;
 
-  constructor(client: RedisClientWrapper, logger: Logger) {
+  constructor(client: RedisClientWrapper, logger: LoggerLike) {
     this.client = client;
     this.logger = logger.child({ component: 'HealthChecker' });
   }

@@ -1,8 +1,9 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from 'api-loggers';
+
 import { RedisConfig, CacheOptions } from './types.js';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';
+import { defaultLogger, LoggerLike } from './logger.js';
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -10,12 +11,12 @@ const gunzip = promisify(zlib.gunzip);
 
 export class Cache {
   private client: RedisClientWrapper;
-  private logger: Logger;
+  private logger: LoggerLike;
   // private config: RedisConfig;
   private defaultTTL: number;
   private compressionThreshold: number;
 
-  constructor(client: RedisClientWrapper, config: RedisConfig, logger: Logger) {
+  constructor(client: RedisClientWrapper, config: RedisConfig, logger: LoggerLike = defaultLogger) {
     this.client = client;
     this.logger = logger.child({ component: 'Cache' });
     // this.config = config;
