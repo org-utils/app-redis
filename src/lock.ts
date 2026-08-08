@@ -1,7 +1,7 @@
 import { RedisClientWrapper } from './client.js';
 import { RedisError } from './errors.js';
 import { randomBytes } from 'node:crypto';
-import { Logger } from 'api-loggers';
+import { defaultLogger, LoggerLike } from './logger.js';
 
 export interface LockInfo {
   locked: boolean;
@@ -17,14 +17,14 @@ export interface DistributedLockOptions {
 
 export class DistributedLock {
   private client: RedisClientWrapper;
-  private logger: Logger;
+  private logger: LoggerLike;
   private defaultTTL: number;
   private defaultRetryCount: number;
   private defaultRetryDelay: number;
 
   constructor(
     client: RedisClientWrapper,
-    logger: Logger,
+    logger: LoggerLike = defaultLogger,
     options: Partial<DistributedLockOptions> = {}
   ) {
     this.client = client;
