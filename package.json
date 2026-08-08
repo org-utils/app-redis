@@ -1,6 +1,6 @@
 {
   "name": "app-redis",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Production-grade Redis infrastructure for distributed systems",
   "type": "module",
   "main": "./dist/index.js",
@@ -47,7 +47,6 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write 'src/**/*.ts'",
-
     "clean:git": "git clean -xdf",
     "changeset": "changeset",
     "version": "changeset version",
