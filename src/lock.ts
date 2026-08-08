@@ -1,7 +1,7 @@
 import { RedisClientWrapper } from './client.js';
 import { RedisError } from './errors.js';
 import { randomBytes } from 'node:crypto';
-import { Logger } from '@dev_config/logger';
+import { Logger } from 'api-loggers';
 
 export interface LockInfo {
   locked: boolean;

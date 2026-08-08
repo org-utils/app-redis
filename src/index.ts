@@ -7,9 +7,9 @@ export { HealthChecker } from './health.js';
 
 // Re-export logger types for convenience
 
-import { createLogger } from '@dev_config/logger';
+import { createLogger } from 'api-loggers';
 
-export type { Logger, LoggerOptions } from '@dev_config/logger';
+export type { Logger, LoggerOptions } from 'api-loggers';
 
 
 // Error exports

@@ -1,6 +1,6 @@
 import Redis, { Cluster, Redis as RedisClient, RedisOptions } from 'ioredis';
 import { RedisConfig } from './types.js';
-import { Logger } from '@dev_config/logger';
+import { Logger } from 'api-loggers';
 
 import { RedisError } from './errors.js';
 

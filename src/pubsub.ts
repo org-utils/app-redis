@@ -1,5 +1,5 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from '@dev_config/logger';
+import { Logger } from 'api-loggers';
 
 import { EventEmitter } from 'node:events';
 import { RedisConfig } from './types.js';
