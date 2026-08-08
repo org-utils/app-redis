@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.2
+
+### Patch Changes
+
+- [#7](https://github.com/org-utils/app-redis/pull/7) [`e27bb47`](https://github.com/org-utils/app-redis/commit/e27bb4791813b2d514c7dda0648ed8a5464fb16b) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - removed hardcoded logger
+
 ## 0.0.1
 
 ### Patch Changes
