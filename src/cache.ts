@@ -1,5 +1,5 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from '@dev_config/logger';
+import { Logger } from 'api-loggers';
 import { RedisConfig, CacheOptions } from './types.js';
 import zlib from 'node:zlib';
 import { promisify } from 'node:util';

@@ -1,5 +1,5 @@
 import { RedisClientWrapper } from './client.js';
-import { Logger } from '@dev_config/logger';
+import { Logger } from 'api-loggers';
 
 
 export interface HealthStatus {
