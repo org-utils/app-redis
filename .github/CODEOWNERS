@@ -1,0 +1,5 @@
+# Repository owner must review all changes
+* @Anwarkamal143
+
+# Protect the CODEOWNERS configuration itself
+/.github/ @Anwarkamal143
