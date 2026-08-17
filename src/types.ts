@@ -91,6 +91,9 @@ import { z } from 'zod';
 //   }
 // });
 // Base config that's common to all modes
+/**
+ * Configuration fields shared by all connection modes.
+ */
 const BaseRedisConfig = z.object({
   password: z.string().optional(),
   username: z.string().optional(),
@@ -113,6 +116,10 @@ const BaseRedisConfig = z.object({
 });
 
 // Mode-specific configs
+/**
+ * Standalone (single node) connection config.
+ * Requires either a `url` or both `host` and `port`.
+ */
 const StandaloneConfig = BaseRedisConfig.extend({
   mode: z.literal('standalone').default('standalone'),
   host: z.string().default('localhost').optional(),
@@ -140,6 +147,9 @@ const StandaloneConfig = BaseRedisConfig.extend({
   // or you can allow both and let the consumer decide
 });
 
+/**
+ * Sentinel connection config. Requires `sentinelNodes` and `sentinelMasterName`.
+ */
 const SentinelConfig = BaseRedisConfig.extend({
   mode: z.literal('sentinel'),
   host: z.string().optional(),
@@ -151,6 +161,9 @@ const SentinelConfig = BaseRedisConfig.extend({
   sentinelMasterName: z.string(),
 });
 
+/**
+ * Cluster connection config. Requires `clusterNodes`.
+ */
 const ClusterConfig = BaseRedisConfig.extend({
   mode: z.literal('cluster'),
   host: z.string().optional(),
@@ -161,97 +174,209 @@ const ClusterConfig = BaseRedisConfig.extend({
   })),
 });
 
+
+export const RateLimitAlgorithmSchema = z.enum(['fixed', 'sliding']);
+
+export const RateLimitOptionsSchema = z.object({
+  limit: z.number().int().positive().default(100),
+  duration: z.number().int().positive().default(60),
+  algorithm: RateLimitAlgorithmSchema.default('sliding'),
+  namespace: z.string().min(1).default('ratelimit'),
+});
+
+export const RedisSettingsSchema = z.object({
+  rateLimit: RateLimitOptionsSchema.default({
+    algorithm: 'sliding',
+    duration: 60,
+    limit: 100,
+    namespace: 'ratelimit',
+  }),
+});
+
+
 // Union of all configs
-export const RedisConfigSchema = z.discriminatedUnion('mode', [
-  StandaloneConfig,
-  SentinelConfig,
-  ClusterConfig,
-]);
+/**
+ * Zod schema validating the connection config for every mode
+ * (`standalone`, `sentinel`, `cluster`) with mode-specific requirements.
+ *
+ * @example
+ * ```ts
+ * const config = RedisConfigSchema.parse({
+ *   mode: 'standalone',
+ *   host: 'localhost',
+ *   port: 6379,
+ * });
+ * ```
+ */
+ export const RedisConfigSchema = z.discriminatedUnion('mode', [
+   StandaloneConfig.extend(RedisSettingsSchema.shape),
+   SentinelConfig.extend(RedisSettingsSchema.shape),
+   ClusterConfig.extend(RedisSettingsSchema.shape),
+ ]);
+
+/**
+ * Connection configuration for the Redis client — the inferred type of
+ * {@link RedisConfigSchema} (plus ioredis options).
+ */
 export type RedisConfig = RedisOptions & z.infer<typeof RedisConfigSchema> ;
 
 // ============ Cache Types ============
+/**
+ * Options for a single cache write.
+ */
 export interface CacheOptions {
+  /** TTL in seconds (falls back to the cache's `defaultTTL`). */
   ttl?: number;
+  /** Enable/disable gzip compression for this write. Default: `true`. */
   compress?: boolean;
+  /** Namespace prefix, stored as `namespace:key`. */
   namespace?: string;
 }
 
+/**
+ * Statistics about a cache namespace.
+ */
 export interface CacheStats {
+  /** The namespace being reported on. */
   namespace: string;
+  /** Connection status of the underlying client. */
   connectionStatus: any;
 }
 
 // ============ Lock Types ============
+/**
+ * Options for a distributed lock.
+ */
 export interface LockOptions {
+  /** Lock TTL in milliseconds. */
   ttl?: number;
+  /** Number of acquisition attempts. */
   retryCount?: number;
+  /** Base retry delay in ms (grows exponentially). */
   retryDelay?: number;
 }
 
+/**
+ * Information about a distributed lock.
+ */
 export interface LockInfo {
+  /** Whether the lock is currently held. */
   locked: boolean;
+  /** Remaining TTL in seconds. */
   ttl?: number;
+  /** Unique owner id of the lock. */
   lockId?: string;
 }
 
+/**
+ * Options for the distributed lock (alias of {@link LockOptions}).
+ */
 export interface DistributedLockOptions {
+  /** Lock TTL in milliseconds. */
   ttl?: number;
+  /** Number of acquisition attempts. */
   retryCount?: number;
+  /** Base retry delay in ms (grows exponentially). */
   retryDelay?: number;
 }
 
 // ============ Health Types ============
+/**
+ * Health check result.
+ */
 export interface HealthStatus {
+  /** Overall health: `true` when the server is reachable and responsive. */
   healthy: boolean;
+  /** `'healthy'` | `'degraded'` | `'unhealthy'`. */
   status: 'healthy' | 'degraded' | 'unhealthy';
+  /** Round-trip latency of the check in ms. */
   latency: number;
+  /** When the check ran. */
   timestamp: Date;
+  /** Check details. */
   details: {
+    /** Whether the `PING` succeeded. */
     ping: boolean;
+    /** Active connections (when available). */
     connections?: number;
+    /** Memory usage from `INFO memory` (when available). */
     memory?: string;
   };
 }
 
 // ============ Pub/Sub Types ============
+/**
+ * Pub/Sub subscription statistics.
+ */
 export interface PubSubStats {
+  /** Number of active channel subscriptions. */
   subscriptions: number;
+  /** Number of active pattern subscriptions. */
   patternSubscriptions: number;
+  /** Whether the subscriber connection is open. */
   connected: boolean;
 }
 
+/**
+ * A pub/sub message, as delivered to pattern subscription handlers.
+ */
 export interface PubSubMessage<T = any> {
+  /** The channel the message arrived on. */
   channel: string;
+  /** The message payload (JSON-parsed when possible). */
   message: T;
 }
 
 // ============ Cluster Types ============
+/**
+ * Snapshot of cluster topology and status.
+ */
 export interface ClusterInfo {
+  /** `'cluster'` when backed by Redis Cluster, `'standalone'` otherwise. */
   mode: 'cluster' | 'standalone';
+  /** `'ready'` | `'connecting'` | `'error'`. */
   status: 'ready' | 'connecting' | 'error';
+  /** Number of nodes (cluster mode). */
   nodeCount?: number;
+  /** Number of served hash slots (cluster mode). */
   slotCount?: number;
+  /** Per-node details (cluster mode). */
   nodes?: Array<{
     host: string;
     port: number;
     role?: string;
   }>;
+  /** Host of a standalone/sentinel client. */
   host?: string;
+  /** Port of a standalone/sentinel client. */
   port?: number;
+  /** Error message when `status` is `'error'`. */
   error?: string;
 }
 
 // ============ Connection Types ============
+/**
+ * Connection lifecycle status.
+ */
 export interface ConnectionStatus {
+  /** `'disconnected'` | `'connecting'` | `'connected'` | `'error'` | `'closed'`. */
   state: 'disconnected' | 'connecting' | 'connected' | 'error' | 'closed';
+  /** Whether the client is currently connected. */
   connected: boolean;
+  /** Whether the connection is ready to serve commands. */
   ready: boolean;
+  /** Last connection error (when in `'error'` state). */
   lastError?: Error;
+  /** Number of reconnect attempts. */
   reconnectAttempts: number;
+  /** Uptime in ms. */
   uptime: number;
 }
 
 // ============ Event Types ============
+/**
+ * Event payloads emitted by the Redis client.
+ */
 export type RedisEventMap = {
   connect: void;
   ready: void;
@@ -267,6 +392,9 @@ export type RedisEventMap = {
   ask: { key: string; target: any };
 };
 
+/**
+ * Event payloads emitted by the Pub/Sub layer.
+ */
 export type PubSubEventMap = {
   message: { channel: string; message: string };
   pmessage: { pattern: string; channel: string; message: string };
@@ -277,6 +405,9 @@ export type PubSubEventMap = {
   error: Error;
 };
 
+/**
+ * Event payloads emitted by the cache layer.
+ */
 export type CacheEventMap = {
   hit: { key: string; ttl: number };
   miss: { key: string };
@@ -286,6 +417,10 @@ export type CacheEventMap = {
   refresh: { key: string };
   error: { key: string; error: Error };
 };
+
+/**
+ * Alias for the raw ioredis client type.
+ */
 export type Redis = RedisType
 
 

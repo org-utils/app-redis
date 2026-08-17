@@ -4,6 +4,8 @@ export { Cache } from './cache.js';
 export { PubSub } from './pubsub.js';
 export { DistributedLock } from './lock.js';
 export { HealthChecker } from './health.js';
+export { RateLimiter } from './ratelimiter.js';
+export type { RateLimitAlgorithm, RateLimitOptions, RateLimitResult } from './ratelimiter.js';
 
 // Re-export logger types for convenience
 
@@ -38,6 +40,7 @@ import { Cache } from './cache.js';
 import { PubSub } from './pubsub.js';
 import { DistributedLock } from './lock.js';
 import { HealthChecker } from './health.js';
+import { RateLimiter } from './ratelimiter.js';
 
 export default {
   RedisClient,
@@ -45,4 +48,5 @@ export default {
   PubSub,
   DistributedLock,
   HealthChecker,
+  RateLimiter,
 };

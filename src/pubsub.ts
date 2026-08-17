@@ -4,6 +4,25 @@ import { EventEmitter } from 'node:events';
 import { RedisConfig } from './types.js';
 import { defaultLogger, LoggerLike } from './logger.js';
 
+/**
+ * Redis Pub/Sub with a dedicated publisher and subscriber connection.
+ *
+ * Messages are JSON-serialized on publish and auto-parsed on delivery.
+ * Extends `EventEmitter` and emits `'error'` on subscriber failures.
+ *
+ * Works in all three modes (standalone, sentinel, cluster).
+ *
+ * @example
+ * ```ts
+ * const pubsub = new PubSub(client);
+ * await pubsub.connectSubscriber(redisConfig);
+ *
+ * await pubsub.subscribe('orders:created', (message) => {
+ *   console.log(message); // { id: 1 }
+ * });
+ * await pubsub.publish('orders:created', { id: 1 });
+ * ```
+ */
 export class PubSub extends EventEmitter {
   private publisher: RedisClientWrapper;
   private subscriber: RedisClientWrapper | null = null;
@@ -11,12 +30,37 @@ export class PubSub extends EventEmitter {
   private subscriptions: Map<string, Set<(data: any) => void>> = new Map();
   private patternSubscriptions: Map<string, Set<(data: any) => void>> = new Map();
 
+  /**
+   * Creates a pub/sub instance. Publishing works immediately; subscribing
+   * requires calling {@link connectSubscriber} first.
+   *
+   * @param publisher - A {@link RedisClientWrapper} used for publishing.
+   * @param logger - Optional pino-compatible logger; defaults to `console`.
+   *
+   * @example
+   * ```ts
+   * const pubsub = new PubSub(client);
+   * ```
+   */
   constructor(publisher: RedisClientWrapper, logger: LoggerLike = defaultLogger) {
     super();
     this.publisher = publisher;
     this.logger = logger.child({ component: 'PubSub' });
   }
 
+  /**
+   * Opens a dedicated subscriber connection.
+   *
+   * Idempotent: a second call is a no-op while a subscriber is connected.
+   * Subscriber errors are emitted as `'error'` events on the instance.
+   *
+   * @param config - Redis config for the subscriber connection (any mode).
+   *
+   * @example
+   * ```ts
+   * await pubsub.connectSubscriber({ mode: 'standalone', host: 'localhost', port: 6379 });
+   * ```
+   */
   async connectSubscriber(config: RedisConfig): Promise<void> {
     if (this.subscriber) return;
 
@@ -75,11 +119,42 @@ export class PubSub extends EventEmitter {
     }
   }
 
+  /**
+   * Publishes a message to a channel.
+   *
+   * Non-string values are JSON-serialized.
+   *
+   * @param channel - The channel name.
+   * @param message - The message payload (string or any JSON-serializable value).
+   * @returns The number of subscribers that received the message.
+   *
+   * @example
+   * ```ts
+   * const receivers = await pubsub.publish('orders:created', { id: 1, total: 99 });
+   * ```
+   */
   async publish<T = any>(channel: string, message: T): Promise<number> {
     const raw = typeof message === 'string' ? message : JSON.stringify(message);
     return this.publisher.raw.publish(channel, raw);
   }
 
+  /**
+   * Subscribes a handler to a channel.
+   *
+   * Multiple handlers per channel are supported; the channel is subscribed on
+   * Redis only once. Delivered payloads are JSON-parsed when possible.
+   *
+   * @param channel - The channel name.
+   * @param handler - Callback receiving the (parsed) message.
+   * @throws `Error` if the subscriber connection is not open.
+   *
+   * @example
+   * ```ts
+   * await pubsub.subscribe('orders:created', (order) => {
+   *   console.log(order.id);
+   * });
+   * ```
+   */
   async subscribe<T = any>(
     channel: string,
     handler: (data: T) => void
@@ -97,6 +172,22 @@ export class PubSub extends EventEmitter {
     this.logger.debug('Subscribed to channel', { channel });
   }
 
+  /**
+   * Removes a handler (or all handlers) from a channel.
+   *
+   * The Redis subscription is dropped once the last handler for the channel is
+   * removed. Without a handler, the whole channel is unsubscribed.
+   *
+   * @param channel - The channel name.
+   * @param handler - Optional specific handler to remove; when omitted all
+   *   handlers for the channel are removed.
+   *
+   * @example
+   * ```ts
+   * await pubsub.unsubscribe('orders:created', myHandler);
+   * await pubsub.unsubscribe('orders:created'); // remove everything
+   * ```
+   */
   async unsubscribe<T = any>(
     channel: string,
     handler?: (data: T) => void
@@ -117,6 +208,22 @@ export class PubSub extends EventEmitter {
     }
   }
 
+  /**
+   * Subscribes a handler to all channels matching a glob pattern.
+   *
+   * Pattern handlers receive `{ channel, message }` (message JSON-parsed).
+   *
+   * @param pattern - Glob pattern, e.g. `'orders:*'`.
+   * @param handler - Callback receiving `{ channel, message }`.
+   * @throws `Error` if the subscriber connection is not open.
+   *
+   * @example
+   * ```ts
+   * await pubsub.psubscribe('orders:*', ({ channel, message }) => {
+   *   console.log(channel, message);
+   * });
+   * ```
+   */
   async psubscribe<T = any>(
     pattern: string,
     handler: (data: { channel: string; message: T }) => void
@@ -133,6 +240,19 @@ export class PubSub extends EventEmitter {
     this.patternSubscriptions.get(pattern)!.add(handler);
   }
 
+  /**
+   * Removes a handler (or all handlers) from a pattern subscription.
+   *
+   * @param pattern - The glob pattern.
+   * @param handler - Optional specific handler to remove; when omitted all
+   *   handlers for the pattern are removed.
+   *
+   * @example
+   * ```ts
+   * await pubsub.punsubscribe('orders:*', myHandler);
+   * await pubsub.punsubscribe('orders:*');
+   * ```
+   */
   async punsubscribe(
     pattern: string,
     handler?: (data: any) => void
@@ -153,6 +273,16 @@ export class PubSub extends EventEmitter {
     }
   }
 
+  /**
+   * Closes the subscriber connection and clears all subscriptions.
+   *
+   * The publisher client is not closed (it is owned by the caller).
+   *
+   * @example
+   * ```ts
+   * await pubsub.close();
+   * ```
+   */
   async close(): Promise<void> {
     if (this.subscriber) {
       await this.subscriber.close();
@@ -162,6 +292,17 @@ export class PubSub extends EventEmitter {
     this.patternSubscriptions.clear();
   }
 
+  /**
+   * Returns subscription statistics.
+   *
+   * @returns `{ subscriptions, patternSubscriptions, connected }`.
+   *
+   * @example
+   * ```ts
+   * const stats = pubsub.getStats();
+   * // { subscriptions: 2, patternSubscriptions: 1, connected: true }
+   * ```
+   */
   getStats() {
     return {
       subscriptions: this.subscriptions.size,

@@ -91,6 +91,17 @@ export class HealthChecker {
     return status;
   }
 
+  /**
+   * Returns the most recent health check result.
+   *
+   * @returns The last {@link HealthStatus}, or `null` before the first check.
+   *
+   * @example
+   * ```ts
+   * const status = health.getStatus();
+   * console.log(status?.healthy, status?.latency);
+   * ```
+   */
   getStatus(): HealthStatus | null {
     return this.lastStatus;
   }
