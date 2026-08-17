@@ -1,6 +1,6 @@
 {
   "name": "app-redis",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Production-grade Redis infrastructure for distributed systems",
   "type": "module",
   "main": "./dist/index.js",
