@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.4
+
+### Patch Changes
+
+- [`ac33e19`](https://github.com/org-utils/app-redis/commit/ac33e190faabc7a888ea839e21dffa34fbf23f7a) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - added getdel method to redis client
+
 ## 0.0.3
 
 ### Patch Changes
