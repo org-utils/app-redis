@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.3
+
+### Patch Changes
+
+- [`6343f62`](https://github.com/org-utils/app-redis/commit/6343f622ff67ae7e817e704e7d95c331af54f0ed) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - Updated health check
+
 ## 0.0.2
 
 ### Patch Changes
