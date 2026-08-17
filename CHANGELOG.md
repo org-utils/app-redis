@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.6
+
+### Patch Changes
+
+- [`ae1775f`](https://github.com/org-utils/app-redis/commit/ae1775fd96ad38f542bdb300e473e607bcb395b1) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - optional ratelimit params
+
 ## 0.0.5
 
 ### Patch Changes
