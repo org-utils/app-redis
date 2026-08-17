@@ -211,6 +211,9 @@ export class RedisClientWrapper {
   async del(...keys: string[]): Promise<number> {
     return this.exec('DEL', keys, () => this.client.del(...keys));
   }
+  async getdel(key: string): Promise<string | null> {
+    return this.exec('GETDEL', [key], () => this.client.getdel(key));
+  }
 
   async exists(key: string): Promise<number> {
     return this.exec('EXISTS', [key], () => this.client.exists(key));
