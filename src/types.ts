@@ -185,7 +185,7 @@ export const RateLimitOptionsSchema = z.object({
 });
 
 export const RedisSettingsSchema = z.object({
-  rateLimit: RateLimitOptionsSchema.default({
+  rateLimit: RateLimitOptionsSchema.optional().default({
     algorithm: 'sliding',
     duration: 60,
     limit: 100,
