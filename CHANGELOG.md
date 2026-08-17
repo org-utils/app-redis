@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.8
+
+### Patch Changes
+
+- [`ff887e3`](https://github.com/org-utils/app-redis/commit/ff887e3c2bcf943897baf427021d5618bfc07ac0) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - update the shape
+
 ## 0.0.7
 
 ### Patch Changes
