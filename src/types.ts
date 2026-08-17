@@ -185,13 +185,13 @@ export const RateLimitOptionsSchema = z.object({
 });
 
 export const RedisSettingsSchema = z.object({
-  rateLimit: RateLimitOptionsSchema.optional().default({
+  rateLimit: RateLimitOptionsSchema.default({
     algorithm: 'sliding',
     duration: 60,
     limit: 100,
     namespace: 'ratelimit',
   }),
-});
+}).optional();
 
 
 // Union of all configs
@@ -209,9 +209,9 @@ export const RedisSettingsSchema = z.object({
  * ```
  */
  export const RedisConfigSchema = z.discriminatedUnion('mode', [
-   StandaloneConfig.extend(RedisSettingsSchema.shape),
-   SentinelConfig.extend(RedisSettingsSchema.shape),
-   ClusterConfig.extend(RedisSettingsSchema.shape),
+   StandaloneConfig.extend(RedisSettingsSchema),
+   SentinelConfig.extend(RedisSettingsSchema),
+   ClusterConfig.extend(RedisSettingsSchema),
  ]);
 
 /**
