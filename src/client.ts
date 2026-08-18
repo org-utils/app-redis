@@ -1,15 +1,21 @@
-import Redis, { Cluster, Redis as RedisClient, RedisOptions } from 'ioredis';
+import Redis, { Cluster, Redis as RedisClient } from "ioredis";
 
-import { RedisError } from './errors.js';
-import type { RedisConfig } from './types.js';
-import { defaultLogger, type LoggerLike } from './logger.js';
-import { Cache } from './cache.js';
-import { PubSub } from './pubsub.js';
-import { DistributedLock } from './lock.js';
-import { RateLimiter } from './ratelimiter.js';
-export interface RedisClientOptions { config: RedisConfig; logger?: LoggerLike; }
-
-
+import { RedisError } from "./errors.js";
+import type { RedisConfig } from "./types.js";
+import { defaultLogger, type LoggerLike } from "./logger.js";
+import { executeBySlot } from "./cluster.js";
+import { Cache } from "./cache.js";
+import { PubSub } from "./pubsub.js";
+import { DistributedLock } from "./lock.js";
+import { RateLimiter } from "./ratelimiter.js";
+import {
+  createSessionManager,
+  SessionManager,
+} from "./session/session-manager.js";
+export interface RedisClientOptions {
+  config: RedisConfig;
+  logger?: LoggerLike;
+}
 
 /**
  * Production-grade Redis client wrapper with support for standalone, sentinel and cluster modes.
@@ -33,10 +39,16 @@ export class RedisClientWrapper {
   private _pubsub!: PubSub;
   private _lock!: DistributedLock;
   private _rateLimiter!: RateLimiter;
+  private _session!: SessionManager;
   private config: RedisConfig;
   // private logger: Logger;
   private isReady: boolean = false;
   private readonly logger: LoggerLike;
+
+  /** Connection topology ('standalone' | 'sentinel' | 'cluster'), for labels. */
+  get mode(): string {
+    return this.config.mode;
+  }
 
   /**
    * Creates a Redis client for the given configuration.
@@ -200,10 +212,66 @@ export class RedisClientWrapper {
     this._rateLimiter = value;
   }
 
+  /**
+   * Replaces the lazily-created {@link SessionManager}.
+   *
+   * Use when the session manager must be constructed explicitly (custom
+   * config, a custom client, or an injected circuit breaker); otherwise
+   * leave unset and read {@link client.session} to get the default one.
+   *
+   * @param value - The {@link SessionManager} instance to use.
+   *
+   * @example
+   * ```ts
+   * client.session = createSessionManager({
+   *   client,
+   *   config: { enabled: true, namespace: 'authcore' },
+   * });
+   * ```
+   */
+  set session(value: SessionManager) {
+    this._session = value;
+  }
+
+  /**
+   * Lazily creates and returns the {@link SessionManager} for this client.
+   *
+   * The manager is built once from `config.sessionOptions`
+   * (`Partial<SessionManagerOptions>`: session config, revocation store,
+   * metrics adapter, etc.). A `sessionOptions.client` overrides the client
+   * the manager talks to (defaults to this wrapper). `sessionOptions` is
+   * spread into `createSessionManager`, so `config.enabled` is NOT implied
+   * by this client's config — set `sessionOptions.config.enabled = true`
+   * explicitly (see `parseSessionConfig`).
+   *
+   * @returns The (cached) {@link SessionManager}.
+   *
+   * @example
+   * ```ts
+   * const manager = client.session; // built from config.sessionOptions
+   * const result = await manager.service.validate(token, { userId });
+   * ```
+   */
+  get session(): SessionManager {
+    if (!this._session) {
+      const { client: customClient, ...sessionOptions } =
+        this.config?.sessionOptions || {};
+      const client = customClient ?? this;
+      // RedisConfig carries no session settings; the manager applies its
+      // own defaults (see parseSessionConfig).
+      this._session = createSessionManager({
+        client,
+        ...(sessionOptions || {}),
+      });
+    }
+    return this._session;
+  }
+
   private createClient(): RedisClient | Cluster {
     const baseOptions = {
       retryStrategy: (times: number) => {
-        if (this.config?.maxRetries != null && times > this.config?.maxRetries) return null;
+        if (this.config?.maxRetries != null && times > this.config?.maxRetries)
+          return null;
         return Math.min(times * (this.config?.retryDelay ?? 1000), 5000);
       },
       connectTimeout: this.config.connectionTimeout,
@@ -211,31 +279,34 @@ export class RedisClientWrapper {
       enableReadyCheck: true,
       enableOfflineQueue: true,
       lazyConnect: false,
-
     };
 
     switch (this.config.mode) {
-      case 'cluster':
+      case "cluster":
         if (!this.config.clusterNodes?.length) {
-          throw new RedisError('Cluster nodes required for cluster mode');
+          throw new RedisError("Cluster nodes required for cluster mode");
         }
         return new Redis.Cluster(
-          this.config.clusterNodes.map(n => ({ host: n.host, port: n.port })),
+          this.config.clusterNodes.map((n) => ({ host: n.host, port: n.port })),
           {
             ...baseOptions,
-            scaleReads: 'master',
+            scaleReads: "master",
             redisOptions: this.buildRedisOptions(),
           }
         );
 
-      case 'sentinel':
-        if (!this.config.sentinelNodes?.length || !this.config.sentinelMasterName) {
-          throw new RedisError('Sentinel nodes and master name required');
+      case "sentinel":
+        if (
+          !this.config.sentinelNodes?.length ||
+          !this.config.sentinelMasterName
+        ) {
+          throw new RedisError("Sentinel nodes and master name required");
         }
         return new RedisClient({
           ...baseOptions,
           sentinel: true,
-          sentinelNodes: this.config.sentinelNodes,
+          // ioredis expects `sentinels`; the public API uses `sentinelNodes`.
+          sentinels: this.config.sentinelNodes,
           name: this.config.sentinelMasterName,
           ...this.buildRedisOptions(),
         });
@@ -244,7 +315,7 @@ export class RedisClientWrapper {
         if (this.config.url) {
           return new RedisClient(this.config.url, {
             ...baseOptions,
-            ...this.buildRedisOptions()
+            ...this.buildRedisOptions(),
           });
         }
         return new RedisClient({
@@ -271,26 +342,26 @@ export class RedisClientWrapper {
   }
 
   private setupEventHandlers() {
-    this.client.on('connect', () => {
-      this.logger.info('Redis connected');
+    this.client.on("connect", () => {
+      this.logger.info("Redis connected");
     });
 
-    this.client.on('ready', () => {
+    this.client.on("ready", () => {
       this.isReady = true;
-      this.logger.info('Redis ready');
+      this.logger.info("Redis ready");
     });
 
-    this.client.on('error', (error) => {
-      this.logger.error('Redis error:', error);
+    this.client.on("error", (error) => {
+      this.logger.error("Redis error:", error);
     });
 
-    this.client.on('close', () => {
+    this.client.on("close", () => {
       this.isReady = false;
-      this.logger.warn('Redis connection closed');
+      this.logger.warn("Redis connection closed");
     });
 
-    this.client.on('reconnecting', () => {
-      this.logger.info('Redis reconnecting...');
+    this.client.on("reconnecting", () => {
+      this.logger.info("Redis reconnecting...");
     });
   }
 
@@ -335,7 +406,7 @@ export class RedisClientWrapper {
   async ping(): Promise<boolean> {
     try {
       const result = await this.client.ping();
-      return result === 'PONG';
+      return result === "PONG";
     } catch {
       return false;
     }
@@ -370,11 +441,14 @@ export class RedisClientWrapper {
       const result = await operation();
       const duration = Date.now() - start;
 
-      if (this.config?.slowCommandThreshold != null && duration > this.config?.slowCommandThreshold) {
+      if (
+        this.config?.slowCommandThreshold != null &&
+        duration > this.config?.slowCommandThreshold
+      ) {
         this.logger.warn(`Slow command: ${command} took ${duration}ms`, {
           command,
           args: args.slice(0, 5),
-          duration
+          duration,
         });
       }
 
@@ -398,7 +472,7 @@ export class RedisClientWrapper {
    * ```
    */
   async get(key: string): Promise<string | null> {
-    return this.exec('GET', [key], () => this.client.get(key));
+    return this.exec("GET", [key], () => this.client.get(key));
   }
 
   /**
@@ -415,9 +489,13 @@ export class RedisClientWrapper {
    * await client.set('session:42', 'payload', 3600); // expires in 1 hour
    * ```
    */
-  async set(key: string, value: string | Buffer, ttl?: number): Promise<'OK' | null> {
-    return this.exec('SET', [key, value, ttl ? 'EX' : null, ttl], () =>
-      ttl ? this.client.set(key, value, 'EX', ttl) : this.client.set(key, value)
+  async set(
+    key: string,
+    value: string | Buffer,
+    ttl?: number
+  ): Promise<"OK" | null> {
+    return this.exec("SET", [key, value, ttl ? "EX" : null, ttl], () =>
+      ttl ? this.client.set(key, value, "EX", ttl) : this.client.set(key, value)
     );
   }
 
@@ -437,9 +515,15 @@ export class RedisClientWrapper {
    * }
    * ```
    */
-  async setexnx(key: string, value: string | Buffer, ttl?: number): Promise<'OK' | null> {
-    return this.exec('SET', [key, value, 'NX', ttl ? 'EX' : null, ttl], () =>
-      ttl ? this.client.set(key, value,  'EX', ttl, 'NX') : this.client.set(key, value, 'NX')
+  async setexnx(
+    key: string,
+    value: string | Buffer,
+    ttl?: number
+  ): Promise<"OK" | null> {
+    return this.exec("SET", [key, value, "NX", ttl ? "EX" : null, ttl], () =>
+      ttl
+        ? this.client.set(key, value, "EX", ttl, "NX")
+        : this.client.set(key, value, "NX")
     );
   }
 
@@ -456,35 +540,163 @@ export class RedisClientWrapper {
    * });
    * ```
    */
-  // Or expose the methods needed by fastify-rate-limit
-  defineCommand(...args: Parameters<RedisClient['defineCommand']>) {
+  /**
+   * Registers a custom Lua command on the underlying client (`COMMAND
+   * DOCS` / ioredis `defineCommand`), exposing it as a named method.
+   *
+   * The command definition must declare the number of keys (`numberOfKeys`)
+   * so the underlying client can route it correctly on Redis Cluster —
+   * every key accessed inside the Lua body must share one hash slot.
+   *
+   * @param args - ioredis `defineCommand` arguments (name + definition).
+   * @returns The defined command's bound function.
+   *
+   * @example
+   * ```ts
+   * client.defineCommand('myCommand', {
+   *   numberOfKeys: 1,
+   *   lua: "return redis.call('GET', KEYS[1])",
+   * });
+   * await client.myCommand('key');
+   * ```
+   */
+  defineCommand(...args: Parameters<RedisClient["defineCommand"]>) {
     return this.client.defineCommand(...args);
   }
 
   /**
-   * Sets a key only if it does not already exist (`SETNX`), optionally with a TTL.
+   * Executes a Lua script atomically on the Redis server (`EVAL`).
+   *
+   * Cluster-safe: the first `numKeys` arguments are treated as `KEYS` and
+   * ioredis routes the script to the node owning their hash slot. Every key
+   * accessed inside the script must be declared in `KEYS` and share the
+   * same slot, otherwise Redis Cluster rejects the script.
+   *
+   * @param script - The Lua source to execute.
+   * @param numKeys - Number of keys passed as the next arguments.
+   * @param args - `KEYS` followed by `ARGV` values.
+   * @returns The script's return value (number, string, array, ...).
+   *
+   * @example
+   * ```ts
+   * // Atomic check-and-delete: only the lock owner can release.
+   * const script = `
+   *   if redis.call('GET', KEYS[1]) == ARGV[1] then
+   *     return redis.call('DEL', KEYS[1])
+   *   end
+   *   return 0
+   * `;
+   * const removed = await client.eval(script, 1, 'lock:job', ownerId);
+   * ```
+   */
+  async eval(
+    script: string,
+    numKeys: number,
+    ...args: Array<string | number | Buffer>
+  ): Promise<unknown> {
+    return this.exec("EVAL", [script, numKeys, ...args], () =>
+      this.client.eval(script, numKeys, ...args)
+    );
+  }
+
+  /**
+   * Executes a previously-loaded Lua script by its SHA-1 digest (`EVALSHA`).
+   *
+   * Falls back to `EVAL` when the script is no longer cached on the server
+   * (`NOSCRIPT`), so callers can `SCRIPT LOAD` once and never worry about
+   * cache eviction. Cluster-safe: see {@link eval}.
+   *
+   * @param sha - SHA-1 digest returned by `SCRIPT LOAD`.
+   * @param script - The Lua source, used only as the `EVAL` fallback.
+   * @param numKeys - Number of keys passed as the next arguments.
+   * @param args - `KEYS` followed by `ARGV` values.
+   * @returns The script's return value (number, string, array, ...).
+   *
+   * @example
+   * ```ts
+   * const sha = await client.scriptLoad(script);
+   * const result = await client.evalsha(sha, script, 1, 'my-key', 'arg');
+   * ```
+   */
+  async evalsha(
+    sha: string,
+    script: string,
+    numKeys: number,
+    ...args: Array<string | number | Buffer>
+  ): Promise<unknown> {
+    try {
+      return await this.exec("EVALSHA", [sha, numKeys, ...args], () =>
+        this.client.evalsha(sha, numKeys, ...args)
+      );
+    } catch (error) {
+      const isNoScript =
+        error instanceof Error &&
+        (error.message.includes("NOSCRIPT") ||
+          (error as { code?: string }).code === "NOSCRIPT");
+      if (isNoScript) {
+        return this.eval(script, numKeys, ...args);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Loads a Lua script into the server cache (`SCRIPT LOAD`).
+   *
+   * Returns the SHA-1 digest to use with {@link evalsha}. Loading is
+   * idempotent; in cluster mode ioredis loads the script on every node.
+   *
+   * @param script - The Lua source to load.
+   * @returns The SHA-1 digest of the script.
+   *
+   * @example
+   * ```ts
+   * const sha = await client.scriptLoad(`
+   *   return redis.call('GET', KEYS[1])
+   * `);
+   * ```
+   */
+  async scriptLoad(script: string): Promise<string> {
+    return this.exec(
+      "SCRIPT",
+      ["LOAD", script],
+      () => this.client.script("LOAD", script) as Promise<string>
+    );
+  }
+
+  /**
+   * Sets a key only if it does not already exist (`SET NX EX`), atomically.
+   *
+   * The TTL is part of the same atomic command: there is no window in which
+   * the key exists without an expiration (the previous SETNX + EXPIRE pair
+   * could leak a non-expiring key when a process crashed in between).
    *
    * @param key - The key to set.
    * @param value - The value to store.
-   * @param ttl - Optional TTL in seconds; applied with `EXPIRE` after a successful `SETNX`.
+   * @param ttl - Optional TTL in seconds, applied atomically with `EX`.
    * @returns `1` if the key was set, `0` if the key already existed.
    *
    * @example
    * ```ts
    * const acquired = await client.setnx('lock:order:42', 'owner', 30);
    * if (acquired === 1) {
-   *   // we own the lock
+   *   // we own the lock (expires after 30s even if we crash)
    * }
    * ```
    */
-  async setnx(key: string, value: string | Buffer, ttl?: number): Promise<number> {
-    return this.exec('SETNX', [key, value], () =>
-      this.client.setnx(key, value).then(result => {
-        if (result === 1 && ttl) {
-          return this.client.expire(key, ttl).then(() => 1);
-        }
-        return result;
-      })
+  async setnx(
+    key: string,
+    value: string | Buffer,
+    ttl?: number
+  ): Promise<number> {
+    return this.exec("SETNX", [key, value], () =>
+      ttl
+        ? this.client
+            .set(key, value, "EX", ttl, "NX")
+            .then((result) => (result === "OK" ? 1 : 0))
+        : this.client
+            .set(key, value, "NX")
+            .then((result) => (result === "OK" ? 1 : 0))
     );
   }
 
@@ -500,7 +712,7 @@ export class RedisClientWrapper {
    * ```
    */
   async del(...keys: string[]): Promise<number> {
-    return this.exec('DEL', keys, () => this.client.del(...keys));
+    return this.exec("DEL", keys, () => this.client.del(...keys));
   }
 
   /**
@@ -515,7 +727,7 @@ export class RedisClientWrapper {
    * ```
    */
   async getdel(key: string): Promise<string | null> {
-    return this.exec('GETDEL', [key], () => this.client.getdel(key));
+    return this.exec("GETDEL", [key], () => this.client.getdel(key));
   }
 
   /**
@@ -530,7 +742,7 @@ export class RedisClientWrapper {
    * ```
    */
   async exists(key: string): Promise<number> {
-    return this.exec('EXISTS', [key], () => this.client.exists(key));
+    return this.exec("EXISTS", [key], () => this.client.exists(key));
   }
 
   /**
@@ -546,7 +758,7 @@ export class RedisClientWrapper {
    * ```
    */
   async expire(key: string, ttl: number): Promise<number> {
-    return this.exec('EXPIRE', [key, ttl], () => this.client.expire(key, ttl));
+    return this.exec("EXPIRE", [key, ttl], () => this.client.expire(key, ttl));
   }
 
   /**
@@ -561,7 +773,7 @@ export class RedisClientWrapper {
    * ```
    */
   async ttl(key: string): Promise<number> {
-    return this.exec('TTL', [key], () => this.client.ttl(key));
+    return this.exec("TTL", [key], () => this.client.ttl(key));
   }
 
   /**
@@ -576,7 +788,7 @@ export class RedisClientWrapper {
    * ```
    */
   async incr(key: string): Promise<number> {
-    return this.exec('INCR', [key], () => this.client.incr(key));
+    return this.exec("INCR", [key], () => this.client.incr(key));
   }
 
   /**
@@ -591,7 +803,79 @@ export class RedisClientWrapper {
    * ```
    */
   async decr(key: string): Promise<number> {
-    return this.exec('DECR', [key], () => this.client.decr(key));
+    return this.exec("DECR", [key], () => this.client.decr(key));
+  }
+
+  /**
+   * Atomically increments a counter by an explicit amount (`INCRBY`).
+   *
+   * @param key - The counter key.
+   * @param amount - Amount to add (positive integer). Zero is a no-op.
+   * @returns The new value after incrementing.
+   *
+   * @example
+   * ```ts
+   * const quota = await client.incrby('api:quota:user-1', 100);
+   * ```
+   */
+  async incrby(key: string, amount: number): Promise<number> {
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new RedisError(
+        "INCRBY amount must be a positive safe integer",
+        "INVALID_AMOUNT"
+      );
+    }
+    return this.exec("INCRBY", [key, amount], () =>
+      this.client.incrby(key, amount)
+    );
+  }
+
+  /**
+   * Atomically decrements a counter by an explicit amount (`DECRBY`).
+   *
+   * @param key - The counter key.
+   * @param amount - Amount to subtract (positive integer). Zero is a no-op.
+   * @returns The new value after decrementing.
+   *
+   * @example
+   * ```ts
+   * const remaining = await client.decrby('api:quota:user-1', 10);
+   * ```
+   */
+  async decrby(key: string, amount: number): Promise<number> {
+    if (!Number.isSafeInteger(amount) || amount <= 0) {
+      throw new RedisError(
+        "DECRBY amount must be a positive safe integer",
+        "INVALID_AMOUNT"
+      );
+    }
+    return this.exec("DECRBY", [key, amount], () =>
+      this.client.decrby(key, amount)
+    );
+  }
+
+  /**
+   * Returns the Redis server time as Unix seconds (`TIME`).
+   *
+   * The server clock is the authoritative clock for distributed ordering:
+   * application clocks on horizontally scaled instances can drift, while a
+   * single Redis server's `TIME` is consistent across all clients. Use this
+   * whenever a timestamp decides state transitions (touch, rotation,
+   * expiration) instead of trusting `Date.now()`.
+   *
+   * @returns The current Unix time in whole seconds.
+   *
+   * @example
+   * ```ts
+   * const now = await client.time(); // e.g. 1734991200
+   * ```
+   */
+  async time(): Promise<number> {
+    const result = await this.exec("TIME", [], () => this.client.time());
+    if (Array.isArray(result) && result.length >= 1) {
+      return Number(result[0]);
+    }
+    throw new RedisError("Unexpected TIME response from Redis", "TIME_ERROR");
   }
 
   // Old mget - CROSSSLOT error in cluster mode when keys span different slots
@@ -616,7 +900,7 @@ export class RedisClientWrapper {
     if (this.isClusterClient(this.client)) {
       return this.mgetClusterAware(keys);
     }
-    return this.exec('MGET', keys, () => this.client.mget(...keys));
+    return this.exec("MGET", keys, () => this.client.mget(...keys));
   }
 
   // Old mset - CROSSSLOT error in cluster mode when keys span different slots
@@ -639,7 +923,7 @@ export class RedisClientWrapper {
    * await client.mset(['user:1', 'alice'], ['user:2', 'bob']);
    * ```
    */
-  async mset(...pairs: [string, string | Buffer][]): Promise<'OK'> {
+  async mset(...pairs: [string, string | Buffer][]): Promise<"OK"> {
     if (this.isClusterClient(this.client)) {
       const groups = new Map<number, Array<string | Buffer>>();
       for (const [key, value] of pairs) {
@@ -650,12 +934,12 @@ export class RedisClientWrapper {
         groups.get(slot)!.push(key, value);
       }
       for (const flat of groups.values()) {
-        await this.exec('MSET', flat, () => this.client.mset(flat));
+        await this.exec("MSET", flat, () => this.client.mset(flat));
       }
-      return 'OK';
+      return "OK";
     }
     const flat = pairs.flat();
-    return this.exec('MSET', flat, () => this.client.mset(flat));
+    return this.exec("MSET", flat, () => this.client.mset(flat));
   }
 
   // Hash operations
@@ -672,7 +956,7 @@ export class RedisClientWrapper {
    * ```
    */
   async hget(key: string, field: string): Promise<string | null> {
-    return this.exec('HGET', [key, field], () => this.client.hget(key, field));
+    return this.exec("HGET", [key, field], () => this.client.hget(key, field));
   }
 
   /**
@@ -689,8 +973,14 @@ export class RedisClientWrapper {
    * await client.hset('user:1', 'age', '30');
    * ```
    */
-  async hset(key: string, field: string, value: string | Buffer): Promise<number> {
-    return this.exec('HSET', [key, field, value], () => this.client.hset(key, field, value));
+  async hset(
+    key: string,
+    field: string,
+    value: string | Buffer
+  ): Promise<number> {
+    return this.exec("HSET", [key, field, value], () =>
+      this.client.hset(key, field, value)
+    );
   }
 
   /**
@@ -706,7 +996,7 @@ export class RedisClientWrapper {
    * ```
    */
   async hgetall(key: string): Promise<Record<string, string>> {
-    return this.exec('HGETALL', [key], () => this.client.hgetall(key));
+    return this.exec("HGETALL", [key], () => this.client.hgetall(key));
   }
 
   /**
@@ -722,7 +1012,9 @@ export class RedisClientWrapper {
    * ```
    */
   async hdel(key: string, ...fields: string[]): Promise<number> {
-    return this.exec('HDEL', [key, ...fields], () => this.client.hdel(key, ...fields));
+    return this.exec("HDEL", [key, ...fields], () =>
+      this.client.hdel(key, ...fields)
+    );
   }
 
   // Set operations
@@ -739,7 +1031,9 @@ export class RedisClientWrapper {
    * ```
    */
   async sadd(key: string, ...members: string[]): Promise<number> {
-    return this.exec('SADD', [key, ...members], () => this.client.sadd(key, ...members));
+    return this.exec("SADD", [key, ...members], () =>
+      this.client.sadd(key, ...members)
+    );
   }
 
   /**
@@ -755,7 +1049,9 @@ export class RedisClientWrapper {
    * ```
    */
   async srem(key: string, ...members: string[]): Promise<number> {
-    return this.exec('SREM', [key, ...members], () => this.client.srem(key, ...members));
+    return this.exec("SREM", [key, ...members], () =>
+      this.client.srem(key, ...members)
+    );
   }
 
   /**
@@ -770,7 +1066,7 @@ export class RedisClientWrapper {
    * ```
    */
   async smembers(key: string): Promise<string[]> {
-    return this.exec('SMEMBERS', [key], () => this.client.smembers(key));
+    return this.exec("SMEMBERS", [key], () => this.client.smembers(key));
   }
 
   /**
@@ -786,7 +1082,9 @@ export class RedisClientWrapper {
    * ```
    */
   async sismember(key: string, member: string): Promise<number> {
-    return this.exec('SISMEMBER', [key, member], () => this.client.sismember(key, member));
+    return this.exec("SISMEMBER", [key, member], () =>
+      this.client.sismember(key, member)
+    );
   }
 
   // Sorted set operations
@@ -804,7 +1102,9 @@ export class RedisClientWrapper {
    * ```
    */
   async zadd(key: string, score: number, member: string): Promise<number> {
-    return this.exec('ZADD', [key, score, member], () => this.client.zadd(key, score, member));
+    return this.exec("ZADD", [key, score, member], () =>
+      this.client.zadd(key, score, member)
+    );
   }
 
   /**
@@ -821,7 +1121,24 @@ export class RedisClientWrapper {
    * ```
    */
   async zrange(key: string, start: number, stop: number): Promise<string[]> {
-    return this.exec('ZRANGE', [key, start, stop], () => this.client.zrange(key, start, stop));
+    return this.exec("ZRANGE", [key, start, stop], () =>
+      this.client.zrange(key, start, stop)
+    );
+  }
+
+  /**
+   * Returns the number of members in a sorted set.
+   *
+   * @param key - The sorted set key.
+   * @returns The cardinality of the sorted set.
+   *
+   * @example
+   * ```ts
+   * const count = await client.zcard('leaderboard');
+   * ```
+   */
+  async zcard(key: string): Promise<number> {
+    return this.exec("ZCARD", [key], () => this.client.zcard(key));
   }
 
   /**
@@ -837,7 +1154,9 @@ export class RedisClientWrapper {
    * ```
    */
   async zrem(key: string, ...members: string[]): Promise<number> {
-    return this.exec('ZREM', [key, ...members], () => this.client.zrem(key, ...members));
+    return this.exec("ZREM", [key, ...members], () =>
+      this.client.zrem(key, ...members)
+    );
   }
 
   /**
@@ -895,22 +1214,72 @@ export class RedisClientWrapper {
    * }
    * ```
    */
-  async *scanIterator(pattern: string, count: number = 100): AsyncIterable<string> {
-    const scanNode = async function* (node: any): AsyncIterable<string> {
-      let cursor = '0';
+  async *scanIterator(
+    pattern: string,
+    count: number = 100
+  ): AsyncIterable<string> {
+    for await (const batch of this.scanCluster(pattern, {
+      count,
+      batchSize: 1,
+    })) {
+      for (const key of batch) {
+        yield key;
+      }
+    }
+  }
+
+  /**
+   * Cluster-wide SCAN yielding bounded batches of keys.
+   *
+   * Visits every primary node (cluster mode) or the single node (standalone /
+   * sentinel) and yields `batchSize` keys per iteration. Batches make
+   * downstream consumers pipeline deletes/reads instead of issuing one
+   * command per key.
+   *
+   * Intended for administrative cleanup, diagnostics and maintenance — never
+   * for request-time authentication paths.
+   *
+   * @param pattern - Glob pattern, e.g. `'authcore:session:*'`.
+   * @param options - `count` (SCAN COUNT hint) and `batchSize` (yield size).
+   * @yields Batches of matching keys.
+   *
+   * @example
+   * ```ts
+   * for await (const batch of client.scanCluster('session:*', { batchSize: 100 })) {
+   *   await client.del(...batch);
+   * }
+   * ```
+   */
+  async *scanCluster(
+    pattern: string,
+    options: { count?: number; batchSize?: number } = {}
+  ): AsyncIterable<string[]> {
+    const count = options.count ?? 100;
+    const batchSize = Math.max(1, options.batchSize ?? 100);
+
+    const scanNode = async function* (node: any): AsyncIterable<string[]> {
+      let cursor = "0";
+      let buffer: string[] = [];
+
       do {
         const [nextCursor, keys] = await node.scan(
           cursor,
-          'MATCH',
+          "MATCH",
           pattern,
-          'COUNT',
+          "COUNT",
           count
         );
         cursor = nextCursor;
-        for (const key of keys) {
-          yield key;
+        buffer.push(...keys);
+
+        while (buffer.length >= batchSize) {
+          yield buffer.splice(0, batchSize);
         }
-      } while (cursor !== '0');
+      } while (cursor !== "0");
+
+      if (buffer.length > 0) {
+        yield buffer;
+      }
     };
 
     const nodes = this.isClusterClient(this.client)
@@ -1033,9 +1402,9 @@ export class RedisClientWrapper {
    */
   calculateSlot(key: string): number {
     // Check for hash tags
-    const start = key.indexOf('{');
+    const start = key.indexOf("{");
     if (start !== -1) {
-      const end = key.indexOf('}', start + 1);
+      const end = key.indexOf("}", start + 1);
       if (end !== -1 && start + 1 < end) {
         key = key.substring(start + 1, end);
       }
@@ -1096,7 +1465,7 @@ export class RedisClientWrapper {
       const node = clusterClient.getSlot(slot);
       return node || null;
     } catch (error) {
-      this.logger.warn('Failed to get node for key', { key, error });
+      this.logger.warn("Failed to get node for key", { key, error });
       return null;
     }
   }
@@ -1124,8 +1493,8 @@ export class RedisClientWrapper {
     try {
       const nodes = clusterClient.nodes();
       for (const node of nodes) {
-        const host = node.options?.host || 'unknown';
-        const port = node.options?.port || 'unknown';
+        const host = node.options?.host || "unknown";
+        const port = node.options?.port || "unknown";
         const nodeId = `${host}:${port}`;
 
         if (node.slots) {
@@ -1140,7 +1509,7 @@ export class RedisClientWrapper {
         }
       }
     } catch (error) {
-      this.logger.warn('Failed to get slot ranges', { error });
+      this.logger.warn("Failed to get slot ranges", { error });
     }
 
     return slotRanges;
@@ -1198,11 +1567,13 @@ export class RedisClientWrapper {
         const slot = this.calculateSlot(key);
         const clusterClient = this.client as any;
         const node = clusterClient.getSlot(slot);
-        if (node && typeof node[command] === 'function') {
+        if (node && typeof node[command] === "function") {
           return await node[command](...args);
         }
       } catch (error) {
-        this.logger.warn('Failed to execute on specific node, falling back', { error });
+        this.logger.warn("Failed to execute on specific node, falling back", {
+          error,
+        });
       }
     }
     // Fallback to regular execution
@@ -1238,47 +1609,66 @@ export class RedisClientWrapper {
       groups.get(slot)!.push(key);
     }
 
-    // Execute mget for each group on the appropriate node
+    // Execute mget for each group on the appropriate node with bounded
+    // concurrency (at most 8 slot pipelines in flight at once).
     const results = new Map<string, string | null>();
     const clusterClient = this.client as any;
 
-    await Promise.all(
-      Array.from(groups.entries()).map(async ([slot, slotKeys]) => {
-        try {
-          const node = clusterClient.getSlot(slot);
-          if (node && typeof node.mget === 'function') {
-            const values = await node.mget(...slotKeys);
-            slotKeys.forEach((key, index) => {
-              results.set(key, values[index] || null);
+    const groupsArray = Array.from(groups.entries());
+
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(8, groupsArray.length) },
+      async () => {
+        while (cursor < groupsArray.length) {
+          const [slot, slotKeys] = groupsArray[cursor++]!;
+
+          try {
+            const node = clusterClient.getSlot(slot);
+            if (node && typeof node.mget === "function") {
+              const values = await node.mget(...slotKeys);
+              slotKeys.forEach((key, index) => {
+                results.set(key, values[index] || null);
+              });
+            } else {
+              // Fallback
+              const values = await this.client.mget(...slotKeys);
+              slotKeys.forEach((key, index) => {
+                results.set(key, values[index] || null);
+              });
+            }
+          } catch (error) {
+            this.logger.error("Failed to execute mget on node", {
+              slot,
+              error,
             });
-          } else {
-            // Fallback
+            // Fallback for this group
             const values = await this.client.mget(...slotKeys);
             slotKeys.forEach((key, index) => {
               results.set(key, values[index] || null);
             });
           }
-        } catch (error) {
-          this.logger.error('Failed to execute mget on node', { slot, error });
-          // Fallback for this group
-          const values = await this.client.mget(...slotKeys);
-          slotKeys.forEach((key, index) => {
-            results.set(key, values[index] || null);
-          });
         }
-      })
+      }
     );
 
-    return keys.map(key => results.get(key) || null);
+    await Promise.all(workers);
+
+    return keys.map((key) => results.get(key) || null);
   }
 
   // Delete by pattern with cluster awareness
   /**
    * Deletes every key matching a glob pattern.
    *
-   * Cluster-safe: scans all nodes before deleting.
+   * Cluster-safe: scans all nodes before deleting. Deletes are issued in
+   * bounded batches of same-slot pipelines (via `executeBySlot`), so a large
+   * namespace does not open one command per key.
+   *
+   * Intended for administrative cleanup and tests — never part of a hot path.
    *
    * @param pattern - Glob pattern, e.g. `'session:*'`.
+   * @param options - Batch size hint and scan count hint.
    * @returns The number of deleted keys.
    *
    * @example
@@ -1286,13 +1676,75 @@ export class RedisClientWrapper {
    * const removed = await client.deletePattern('temp:*');
    * ```
    */
-  async deletePattern(pattern: string): Promise<number> {
+  async deletePattern(
+    pattern: string,
+    options: { batchSize?: number; scanCount?: number } = {}
+  ): Promise<number> {
+    const { batchSize = 100, scanCount = 100 } = options;
     let deleted = 0;
-    for await (const key of this.scanIterator(pattern)) {
-      const result = await this.del(key);
-      deleted += result;
+
+    for await (const batch of this.scanCluster(pattern, {
+      count: scanCount,
+      batchSize,
+    })) {
+      const commands = batch.map((key) => ({
+        command: "del",
+        args: [key],
+        slot: this.calculateSlot(key),
+      }));
+      const results = await executeBySlot(this, commands, {
+        concurrency: 8,
+        retry: 1,
+      });
+      for (const result of results) {
+        if (!result[0] && typeof result[1] === "number") {
+          deleted += result[1];
+        }
+      }
     }
+
     return deleted;
+  }
+
+  /**
+   * Deletes every key under a namespace prefix.
+   *
+   * Cluster-safe: scans all nodes for `{prefix}*` and deletes in bounded
+   * same-slot pipeline batches. Never uses `KEYS`.
+   *
+   * @param prefix - Namespace prefix, e.g. `'authcore:session:'`.
+   * @param options - Batch size hint and scan count hint.
+   * @returns The number of deleted keys.
+   *
+   * @example
+   * ```ts
+   * const removed = await client.clearNamespace('authcore:session:');
+   * ```
+   */
+  async clearNamespace(
+    prefix: string,
+    options: { batchSize?: number; scanCount?: number } = {}
+  ): Promise<number> {
+    return this.deletePattern(`${prefix}*`, options);
+  }
+
+  /**
+   * Alias of {@link clearNamespace} kept for discoverability.
+   *
+   * @param prefix - Namespace prefix.
+   * @param options - Batch size hint and scan count hint.
+   * @returns The number of deleted keys.
+   *
+   * @example
+   * ```ts
+   * const removed = await client.clearNamespaceClusterAware('authcore:');
+   * ```
+   */
+  clearNamespaceClusterAware(
+    prefix: string,
+    options: { batchSize?: number; scanCount?: number } = {}
+  ): Promise<number> {
+    return this.clearNamespace(prefix, options);
   }
 
   // Get cluster information
@@ -1316,29 +1768,29 @@ export class RedisClientWrapper {
         const slotRanges = this.getSlotRanges();
 
         return {
-          mode: 'cluster',
-          status: this.isReady ? 'ready' : 'connecting',
+          mode: "cluster",
+          status: this.isReady ? "ready" : "connecting",
           nodeCount: nodes.length,
           slotCount: slotRanges.size,
           nodes: nodes.map((node: any) => ({
-            host: node.options?.host || 'unknown',
-            port: node.options?.port || 'unknown',
-            role: node.options?.role || 'unknown',
+            host: node.options?.host || "unknown",
+            port: node.options?.port || "unknown",
+            role: node.options?.role || "unknown",
           })),
         };
       } catch (error) {
         return {
-          mode: 'cluster',
-          status: 'error',
+          mode: "cluster",
+          status: "error",
           error: String(error),
         };
       }
     }
     return {
-      mode: 'standalone',
+      mode: "standalone",
       host: this.config.host,
       port: this.config.port,
-      status: this.isReady ? 'ready' : 'connecting',
+      status: this.isReady ? "ready" : "connecting",
     };
   }
 
@@ -1356,9 +1808,9 @@ export class RedisClientWrapper {
    */
   async info(section?: string): Promise<string> {
     if (section) {
-      return this.exec('INFO', [section], () => this.client.info(section));
+      return this.exec("INFO", [section], () => this.client.info(section));
     }
-    return this.exec('INFO', [], () => this.client.info());
+    return this.exec("INFO", [], () => this.client.info());
   }
 
   // Select database - only works in standalone mode
@@ -1374,9 +1826,12 @@ export class RedisClientWrapper {
    * await client.select(1);
    * ```
    */
-  async select(database: number): Promise<'OK'> {
+  async select(database: number): Promise<"OK"> {
     if (this.isClusterClient(this.client)) {
-      throw new RedisError('SELECT not supported in cluster mode', 'CLUSTER_MODE');
+      throw new RedisError(
+        "SELECT not supported in cluster mode",
+        "CLUSTER_MODE"
+      );
     }
     return (this.client as RedisClient).select(database);
   }

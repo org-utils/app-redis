@@ -40,11 +40,16 @@ export class MockRedisClient {
   async set(key: string, value: string | Buffer, ...args: unknown[]) {
     this.__calls.push(`set ${key}`);
     let ttl: number | null = null;
+    let nx = false;
     for (let i = 0; i < args.length; i++) {
       if (args[i] === 'EX') {
         ttl = args[i + 1] as number;
       }
+      if (args[i] === 'NX') {
+        nx = true;
+      }
     }
+    if (nx && this.__store.has(key)) return null;
     this.__store.set(key, {
       value,
       expireAt: ttl !== null ? Date.now() + ttl * 1000 : null,

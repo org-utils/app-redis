@@ -1,0 +1,81 @@
+# Sentinel test topology: 2 master/replica pairs + 3 sentinels.
+# Uses a static subnet so sentinel configs can reference fixed IPs.
+#
+#   docker compose -f test/infra/docker-compose.sentinel.yml up -d
+#   REDIS_MODE=sentinel \
+#   REDIS_SENTINEL_NODES=127.0.0.1:26379,127.0.0.1:26380,127.0.0.1:26381 \
+#   REDIS_SENTINEL_MASTER=sessions-master-1 npm test
+
+services:
+  redis-master-1:
+    image: redis:8-alpine
+    command: redis-server --port 6380 --appendonly yes
+    ports: ["6380:6380"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+
+  redis-replica-1:
+    image: redis:8-alpine
+    command: redis-server --port 6381 --slaveof 172.28.0.10 6380
+    ports: ["6381:6381"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.11
+    depends_on: [redis-master-1]
+
+  redis-master-2:
+    image: redis:8-alpine
+    command: redis-server --port 6382 --appendonly yes
+    ports: ["6382:6382"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.12
+
+  redis-replica-2:
+    image: redis:8-alpine
+    command: redis-server --port 6383 --slaveof 172.28.0.12 6382
+    ports: ["6383:6383"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.13
+    depends_on: [redis-master-2]
+
+  sentinel-1:
+    image: redis:8-alpine
+    command: redis-sentinel /etc/sentinel.conf
+    ports: ["26379:26379"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.21
+    depends_on: [redis-master-1, redis-replica-1, redis-master-2, redis-replica-2]
+    volumes:
+      - ./sentinel-1.conf:/etc/sentinel.conf
+
+  sentinel-2:
+    image: redis:8-alpine
+    command: redis-sentinel /etc/sentinel.conf
+    ports: ["26380:26379"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.22
+    depends_on: [redis-master-1, redis-replica-1, redis-master-2, redis-replica-2]
+    volumes:
+      - ./sentinel-2.conf:/etc/sentinel.conf
+
+  sentinel-3:
+    image: redis:8-alpine
+    command: redis-sentinel /etc/sentinel.conf
+    ports: ["26381:26379"]
+    networks:
+      default:
+        ipv4_address: 172.28.0.23
+    depends_on: [redis-master-1, redis-replica-1, redis-master-2, redis-replica-2]
+    volumes:
+      - ./sentinel-3.conf:/etc/sentinel.conf
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

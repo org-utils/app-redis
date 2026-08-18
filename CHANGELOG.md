@@ -1,5 +1,34 @@
 # app-redis
 
+## 0.0.9
+
+### Minor Changes
+
+- **Session subsystem** (`createSessionManager`, `src/session/`): production session stack on top of the legacy stores — validation with fail-closed semantics (`SessionStorageError` = 503, never "invalid"), retry-safe rotation (idempotent `rotationNonce` replays), throttled touches, idle + absolute expiry, atomic per-user eviction ceilings, security versioning, optional AES-256-GCM encryption at rest with key rotation, optional jti index, fail-closed circuit breaker, metrics/health hooks, and idempotent creation. All Cluster-safe by construction (hash-tagged Lua scripts, slot-grouped pipelines).
+- `RedisRevocationStore` gained typed `RevocationError` / `RevocationBatchError` (both `RedisError` subclasses) with exact failure jtis, future-`expiresAt` validation, redaction, and fail-closed reads.
+
+### Patch Changes
+
+- Fixed **sentinel mode**: the wrapper passed `sentinelNodes` straight to
+  ioredis, which expects `sentinels` — sentinel connections only worked
+  against the mock and failed with `ECONNREFUSED` against real sentinels.
+  Now translated internally (public API unchanged).
+- Legacy `RedisSessionStore` is marked `@deprecated` (kept, frozen); the
+  `RedisRevocationStore` in `src/session/revocation-store.ts` was upgraded
+  in place and is shared by the new subsystem.
+- Lua scripts ship in the published package (`dist/session/scripts`).
+- Full test coverage: 12 files / 143 tests — 40 pure unit tests for the
+  subsystem plus 55 real-Redis integration/security/concurrency/failure/
+  encryption/performance tests (smoke included), all also validated
+  against a real Redis Cluster and Sentinel with a live failover drill
+  (see `test/infra/`).
+- Stale jti-index entries are now removed best-effort whenever the session
+  record is gone (spec §25); repeated business errors (invalid tokens,
+  consumed sessions) can no longer open the circuit breaker; cyclic
+  metadata is rejected as `SessionInvalidError` instead of a 503; session
+  metrics carry a `topology` label and surface jti-index write failures
+  (`session.jti_index.write_failures`).
+
 ## 0.0.8
 
 ### Patch Changes

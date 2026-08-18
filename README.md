@@ -10,6 +10,9 @@ Production-grade Redis infrastructure for distributed systems: a unified client,
 - **Distributed lock** (`DistributedLock`) — atomic acquire/release, auto-extension, retries
 - **Pub/Sub** (`PubSub`) — publish, subscribe, pattern subscriptions
 - **Health checker** (`HealthChecker`) — periodic health monitoring with callbacks
+- **Session subsystem** (`createSessionManager`) — the production session stack: validation, retry-safe rotation, idle/absolute expiry, eviction ceilings, security versioning, optional AES-256-GCM encryption at rest, fail-closed circuit breaker, metrics and health
+- **Revocation store** (`RedisRevocationStore`) — TTL-backed token revocation with batch operations and fail-closed checks
+- **Lua scripts** (`eval` / `evalsha`) — atomic server-side logic, Cluster-safe when keys share a hash slot
 - **Observability** — pino-compatible logging and slow-command warnings
 
 ## Installation
@@ -198,6 +201,27 @@ await client.info('memory');    // INFO output
 await client.select(1);         // standalone only
 ```
 
+### Lua scripts (atomic server-side logic)
+
+```ts
+// EVAL: the first numKeys arguments are KEYS, everything else is ARGV.
+// Cluster mode: every key touched inside the script must be declared in
+// KEYS and share one hash slot.
+const script = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+`;
+await client.set('lock:job', 'owner-1');
+await client.eval(script, 1, 'lock:job', 'owner-1'); // 1 (deleted)
+
+// SCRIPT LOAD + EVALSHA: avoid re-sending the script body on every call.
+// evalsha falls back to EVAL automatically when the server cache was flushed.
+const sha = await client.scriptLoad(script);
+await client.evalsha(sha, script, 1, 'lock:job', 'owner-2'); // 0 (not owner)
+```
+
 ### Convenience accessors
 
 `RedisClient` lazily creates and shares one instance of each sub-component. Access them as properties — no manual wiring needed:
@@ -380,6 +404,165 @@ await health.waitForHealthy(30000);  // boolean
 health.stop();
 ```
 
+## Revocation store
+
+`RedisRevocationStore` supports refresh-token revocation workflows: short-lived entries (`revoked:{jti}`) so rotated/logged-out tokens are rejected for their remaining lifetime. It is framework-independent, works identically on standalone, Sentinel and Cluster, never stores raw tokens — only ids (`jti`) — and is the same store the session subsystem consults when `checkRevocationStore: true`.
+
+```ts
+import { RedisRevocationStore } from 'app-redis/session';
+```
+
+### RedisRevocationStore
+
+Each revoked jti is stored as `{prefix}{jti} -> reason` with a Redis TTL equal to the token's remaining lifetime, so expired entries are reclaimed automatically — no sweep job required. Every operation is single-key (or a slot-grouped pipeline for batches), so no hash tags are needed on any topology.
+
+```ts
+const revocations = new RedisRevocationStore({
+  client,
+  keyPrefix: 'authcore:revoked:',
+});
+
+const expiry = Math.floor(Date.now() / 1000) + 86400;
+
+// Revoke (single or batch)
+await revocations.revoke({ jti: 'a1b2c3d4', reason: 'logout', expiresAt: expiry });
+await revocations.revokeMany([
+  { jti: 'b2', reason: 'logout-all', expiresAt: expiry },
+  { jti: 'c3', reason: 'password-change', expiresAt: expiry },
+]);
+
+// Check (single or batch)
+await revocations.isRevoked('a1b2c3d4');              // boolean
+const revoked = await revocations.isRevokedMany(['b2', 'c3', 'd4']); // Set<string>
+
+if (revoked.has('b2')) {
+  // reject the token
+}
+```
+
+Fail-closed semantics: if a batched command fails (Redis error, timeout, ...), `revokeMany` / `isRevokedMany` throw `RevocationBatchError` carrying the exact jtis that failed — a check can never silently treat a token as "not revoked" when its status is unknown.
+
+## Session subsystem
+
+The production session stack (`createSessionManager`): validation with
+fail-closed semantics, rotation with retry-safe idempotency, throttled
+touches, idle + absolute expiry, per-user eviction ceilings, security
+versioning, optional AES-256-GCM encryption at rest, an optional jti index
+for userId-free lookup, a fail-closed circuit breaker, metrics and health
+— all Cluster-safe by construction. It supersedes the historical
+`RedisSessionStore` (removed; see the migration note below).
+
+See `SESSION.md` (spec) and `docs/architecture.md` (decisions,
+deviations, exact semantics) before adopting it. Highlights:
+
+```ts
+import { createSessionManager } from 'app-redis/session';
+
+const manager = createSessionManager({
+  client,
+  config: {
+    enabled: true,              // explicit opt-in
+    namespace: 'authcore',
+    maxSessionsPerUser: 20,
+    securityVersion: { enabled: true },
+  },
+});
+await manager.init();           // preloads the Lua scripts
+
+const { token, session } = await manager.service.create({ userId: 'user-42' });
+
+// Validate: single round trip when userId is known. Never throws for
+// invalid sessions; throws (SessionStorageError) only on infra failure.
+const result = await manager.service.validate(token, { userId: 'user-42' });
+if (result.valid) { /* session is live */ }
+
+// Rotate with a retry-safe nonce (idempotent retries).
+const rotated = await manager.service.rotate(token, { userId: 'user-42', rotationNonce: 'uuid' });
+
+await manager.service.touch(token, { userId: 'user-42' });
+await manager.service.revoke(token, { userId: 'user-42' });       // tombstone
+await manager.service.revokeAll('user-42');                       // logout all devices
+await manager.service.setSecurityVersion('user-42', 2);           // invalidates old sessions
+```
+
+- **Never stores the raw token** — only `jti = SHA-256(token)`.
+- **Validation results** are discriminated: `{ valid: true, session }` or
+  `{ valid: false, reason: 'invalid' | 'not_found' | 'expired' |
+  'idle_timeout' | 'revoked' | 'binding_mismatch' }`.
+- **Fail closed**: infra errors are `SessionStorageError` (503), never
+  "invalid"; a broken revocation-store read is a 503, not a 401. The
+  circuit breaker trips only on storage failures — bad tokens, consumed
+  sessions and concurrent-update conflicts can never open it.
+- **Idempotent creation**: `enableCreateIdempotency: true` + an
+  `idempotencyKey` on `create()` makes retries return the original
+  session (`replayed: true`) instead of duplicating it; the claim is
+  TTL-bounded, so replay windows cannot grow forever.
+- **Encryption at rest**: `encryption: { enabled: true }` +
+  `encryptionKeyProvider` (AES-256-GCM, key-versioned).
+- **Revocation store**: `RedisRevocationStore` plugs in via the
+  `revocationStore` option for external jti denylists.
+- **Manager surface**: `manager.service` (ops), `manager.metrics`,
+  `manager.health`, `manager.circuitBreaker`, `manager.cookies`,
+  `manager.token`, `manager.keys` — plus `manager.config`.
+- **Cookie helpers**: `manager.cookies.serialize(token)` returns the
+  `Set-Cookie` string; `serializeWithAttributes(token)` additionally
+  returns the structured cookie object
+  (`{ header, name, value, attributes: { path, domain?, httpOnly, secure,
+  sameSite, maxAge? } }`, types exported from both entry points).
+
+### Session configuration
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Explicit opt-in; the manager refuses to construct otherwise |
+| `namespace` | — | Key prefix (e.g. `authcore`) |
+| `ttl` | `2592000` (30d) | Absolute session lifetime in seconds |
+| `idleTimeout` | `86400` (24h) | Rolling idle timeout in seconds (`null` disables) |
+| `rolling` | `true` | `touch` extends the idle boundary |
+| `touchInterval` | `300` | Minimum seconds between touch writes (throttling) |
+| `maxSessionsPerUser` | `20` | Eviction ceiling, enforced atomically inside the create script |
+| `securityVersion` | off | Global per-user version; a bump invalidates older sessions |
+| `encryption` | off | AES-256-GCM envelopes (`enabled` + `encryptionKeyProvider`) |
+| `jtiIndex` | off | `jti -> userId` map so validate/touch/rotate work without `userId` |
+| `checkRevocationStore` | `false` | Consult the revocation store during validation |
+| `bindingPolicy` | `disabled` | `strict` rejects on IP/UA/device mismatch, `advisory` reports it |
+| `circuitBreaker` | off | `failureThreshold` 10, `resetTimeoutMs` 30_000, `halfOpenMaxRequests` 5 |
+| `enableCreateIdempotency` | `false` | Idempotent `create()` via `idempotencyKey` |
+| `retainConsumedTombstones` | `true` | Keep consumed records (TTL-bounded) for replay detection |
+
+### Session errors
+
+All session errors extend `SessionError` (itself a `RedisError`):
+`SessionNotFoundError`, `SessionExpiredError`, `SessionInvalidError`,
+`SessionRevokedError`, `SessionRotationError`, `SessionConcurrencyError`,
+`SessionStorageError` (503 — the only one that trips the circuit breaker),
+`SessionSerializationError`, `SessionConfigurationError`,
+`SessionBindingError`. Public error messages
+never contain raw tokens or identifiers.
+
+- Tested end-to-end against standalone, Sentinel and Cluster — the
+  Sentinel topology (`test/infra/`) includes a **live failover drill**
+  (`sentinel-failover-probe.mjs`): sessions created before a master
+  outage stay valid on the promoted replica. The real-Redis suites skip
+  cleanly when Redis is unreachable.
+
+### Migration from `RedisSessionStore` (removed)
+
+`RedisSessionStore` and its types (`SessionStore`, `LegacySessionRecord`,
+`CreateSessionInput`, `UpdateSessionInput`) are **removed**. The data and
+token models are incompatible, so old sessions cannot be read through the
+new API:
+
+- The legacy store keyed sessions by a caller-supplied `jti` and stored
+  raw JSON; the subsystem persists token-derived jtis (`SHA-256(token)`)
+  in versioned envelopes and validates **tokens**, not jtis.
+- **Existing sessions must be re-established** (users re-authenticate).
+  For a smooth cutover, validate old tokens through a time-boxed
+  app-side shim (legacy jti lookup in your own data → mint a new session
+  via `create()`) and remove the shim once the old tokens age out.
+- Do not run both against the same Redis namespace — records and indexes
+  share the same key layout but use different formats.
+
 ## Errors
 
 ```ts
@@ -412,6 +595,9 @@ const client = new RedisClient(config, logger);
 | `mget` / `mset` / `mgetClusterAware` | ✅ | ✅ | ✅ slot-grouped |
 | `scanIterator` / `deletePattern` / `keys` | ✅ | ✅ | ✅ all nodes scanned |
 | Pipelines | ✅ | ✅ | ✅ (same-slot keys per pipeline) |
+| Lua scripts (`eval` / `evalsha` / `scriptLoad`) | ✅ | ✅ | ✅ (keys declared in `KEYS`, one slot) |
+| `RedisRevocationStore` | ✅ | ✅ | ✅ batch ops slot-grouped |
+| `createSessionManager` | ✅ | ✅ | ✅ hash-tagged Lua scripts, slot-grouped fan-out |
 | `select(database)` | ✅ | ✅ | ❌ (Redis limitation) |
 | Hash-tag keys `{tag}:...` | ✅ | ✅ | ✅ same slot |
 
@@ -419,9 +605,10 @@ const client = new RedisClient(config, logger);
 
 ```bash
 npm install
-npm run build       # tsc
+npm run build       # tsc + asset copy (Lua scripts land in dist/session/scripts)
+npm run typecheck   # src + test + scripts (tsconfig.test.json)
 npm test            # vitest
 npm run test:watch
 ```
 
-The test suite covers the client, cache and rate limiter (including cluster-mode behavior) using in-memory fakes — no Redis server required.
+The test suite covers the client, cache and rate limiter (including cluster-mode behavior) using in-memory fakes — no Redis server required. The session suites are gated: they run against real Redis (`localhost:6379`, or `REDIS_MODE=cluster` / `REDIS_MODE=sentinel` with the compose topologies in `test/infra/`) and skip cleanly when it is unreachable.

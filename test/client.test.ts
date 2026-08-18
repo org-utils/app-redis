@@ -13,6 +13,7 @@ vi.mock('ioredis', async () => {
 });
 
 import { RedisClientWrapper } from '../src/client.js';
+import type { RedisConfig } from '../src/types.js';
 import { silentLogger } from './helpers/fake-redis.js';
 
 const config = {
@@ -109,13 +110,13 @@ describe('RedisClientWrapper', () => {
   });
 
   describe('cluster mode', () => {
-    const clusterConfig = {
+    const clusterConfig: RedisConfig = {
       mode: 'cluster',
       clusterNodes: [
         { host: 'localhost', port: 7000 },
         { host: 'localhost', port: 7001 },
       ],
-    } as const;
+    };
 
     it('creates a cluster client', () => {
       const cluster = new RedisClientWrapper(clusterConfig, silentLogger);

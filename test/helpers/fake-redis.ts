@@ -230,10 +230,10 @@ export class FakeRedis {
 
   pipeline() {
     const ops: Array<{ key: string; value: string | Buffer; ttl?: number }> = [];
-    return {
+    const api = {
       set: (key: string, value: string | Buffer, _ex?: string, ttl?: number) => {
-        ops.push({ key, value, ttl });
-        return this;
+        ops.push({ key, value, ...(ttl !== undefined ? { ttl } : {}) });
+        return api;
       },
       exec: async (): Promise<Array<[Error | null, unknown]>> => {
         for (const op of ops) {
@@ -242,6 +242,7 @@ export class FakeRedis {
         return ops.map(() => [null, 'OK']);
       },
     };
+    return api;
   }
 
   async *scanIterator(pattern: string): AsyncIterable<string> {

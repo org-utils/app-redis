@@ -28,7 +28,13 @@ export class TimeoutError extends RedisError {
     this.name = 'TimeoutError';
   }
 }
-
+/** Session referenced by a token no longer exists or has expired. */
+export class SessionExpiredError extends RedisError {
+  constructor(message: string, details?: Record<string, any>) {
+    super(message, 'AUTH_SESSION_EXPIRED', details);
+    this.name = 'SessionExpiredError';
+  }
+}
 export class LockError extends RedisError {
   constructor(message: string, details?: Record<string, any>) {
     super(message, 'LOCK_ERROR', details);

@@ -1,5 +1,6 @@
 import { type Redis as RedisType, RedisOptions } from 'ioredis';
 import { z } from 'zod';
+import { SessionManagerOptions } from './session/session-manager.js';
 
 // ============ Configuration Schema ============
 // export const RedisConfigSchema = z.object({
@@ -218,13 +219,13 @@ export const RedisSettingsSchema = z.object({
  * Connection configuration for the Redis client — the inferred type of
  * {@link RedisConfigSchema} (plus ioredis options).
  */
-export type RedisConfig = RedisOptions & z.infer<typeof RedisConfigSchema> ;
+export type RedisConfig = RedisOptions & z.infer<typeof RedisConfigSchema> & { sessionOptions?: Partial<SessionManagerOptions> } ;
 
 // ============ Cache Types ============
 /**
  * Options for a single cache write.
  */
-export interface CacheOptions {
+export type CacheOptions = {
   /** TTL in seconds (falls back to the cache's `defaultTTL`). */
   ttl?: number;
   /** Enable/disable gzip compression for this write. Default: `true`. */
@@ -236,7 +237,7 @@ export interface CacheOptions {
 /**
  * Statistics about a cache namespace.
  */
-export interface CacheStats {
+export type CacheStats = {
   /** The namespace being reported on. */
   namespace: string;
   /** Connection status of the underlying client. */
@@ -247,7 +248,7 @@ export interface CacheStats {
 /**
  * Options for a distributed lock.
  */
-export interface LockOptions {
+export type LockOptions = {
   /** Lock TTL in milliseconds. */
   ttl?: number;
   /** Number of acquisition attempts. */
@@ -259,7 +260,7 @@ export interface LockOptions {
 /**
  * Information about a distributed lock.
  */
-export interface LockInfo {
+export type LockInfo = {
   /** Whether the lock is currently held. */
   locked: boolean;
   /** Remaining TTL in seconds. */
@@ -271,7 +272,7 @@ export interface LockInfo {
 /**
  * Options for the distributed lock (alias of {@link LockOptions}).
  */
-export interface DistributedLockOptions {
+export type DistributedLockOptions = {
   /** Lock TTL in milliseconds. */
   ttl?: number;
   /** Number of acquisition attempts. */
@@ -284,7 +285,7 @@ export interface DistributedLockOptions {
 /**
  * Health check result.
  */
-export interface HealthStatus {
+export type HealthStatus = {
   /** Overall health: `true` when the server is reachable and responsive. */
   healthy: boolean;
   /** `'healthy'` | `'degraded'` | `'unhealthy'`. */
@@ -308,7 +309,7 @@ export interface HealthStatus {
 /**
  * Pub/Sub subscription statistics.
  */
-export interface PubSubStats {
+export type PubSubStats = {
   /** Number of active channel subscriptions. */
   subscriptions: number;
   /** Number of active pattern subscriptions. */
@@ -320,7 +321,7 @@ export interface PubSubStats {
 /**
  * A pub/sub message, as delivered to pattern subscription handlers.
  */
-export interface PubSubMessage<T = any> {
+export type PubSubMessage<T = any> = {
   /** The channel the message arrived on. */
   channel: string;
   /** The message payload (JSON-parsed when possible). */
@@ -331,7 +332,7 @@ export interface PubSubMessage<T = any> {
 /**
  * Snapshot of cluster topology and status.
  */
-export interface ClusterInfo {
+export type ClusterInfo = {
   /** `'cluster'` when backed by Redis Cluster, `'standalone'` otherwise. */
   mode: 'cluster' | 'standalone';
   /** `'ready'` | `'connecting'` | `'error'`. */
@@ -358,7 +359,7 @@ export interface ClusterInfo {
 /**
  * Connection lifecycle status.
  */
-export interface ConnectionStatus {
+export type ConnectionStatus = {
   /** `'disconnected'` | `'connecting'` | `'connected'` | `'error'` | `'closed'`. */
   state: 'disconnected' | 'connecting' | 'connected' | 'error' | 'closed';
   /** Whether the client is currently connected. */

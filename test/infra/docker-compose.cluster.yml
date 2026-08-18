@@ -1,0 +1,35 @@
+# Session subsystem test infrastructure
+#
+# Run the full session suite against a real Redis Cluster:
+#
+#   docker compose -f test/infra/docker-compose.cluster.yml up -d
+#   REDIS_HOST=127.0.0.1 REDIS_PORT=7000 npm test
+#   docker compose -f test/infra/docker-compose.cluster.yml down
+#
+# Sentinel variant (masters on 6380/6382, sentinels on 26379-26381):
+#
+#   docker compose -f test/infra/docker-compose.sentinel.yml up -d
+#   REDIS_HOST=127.0.0.1 REDIS_PORT=26379 REDIS_MODE=sentinel npm test
+#
+# The suites skip cleanly (runtime ping guard) when Redis is unreachable,
+# so pointing them at any reachable instance works.
+
+services:
+  redis-cluster:
+    image: redis:7-alpine
+    container_name: session-redis-cluster
+    command: sh /scripts/cluster-bootstrap.sh
+    ports:
+      - "7000:7000"
+      - "7001:7001"
+      - "7002:7002"
+      - "7003:7003"
+      - "7004:7004"
+      - "7005:7005"
+    volumes:
+      - ./cluster-bootstrap.sh:/scripts/cluster-bootstrap.sh:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7000", "cluster", "info"]
+      interval: 3s
+      timeout: 2s
+      retries: 30

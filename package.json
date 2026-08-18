@@ -37,6 +37,10 @@
     "./ratelimiter": {
       "types": "./dist/ratelimiter.d.ts",
       "import": "./dist/ratelimiter.js"
+    },
+    "./session": {
+      "types": "./dist/session/index.d.ts",
+      "import": "./dist/session/index.js"
     }
   },
   "publishConfig": {
@@ -44,10 +48,11 @@
     "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-assets.mjs",
     "build:watch": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write 'src/**/*.ts'",
