@@ -1,4 +1,5 @@
 import type { RedisClientWrapper } from '../client.js';
+import { SessionConfigurationError } from './session-errors.js';
 import type { RevocationStore } from './session-types.js';
 import { SessionCircuitBreaker } from './session-circuit-breaker.js';
 import { parseSessionConfig } from './session-config.js';
@@ -61,12 +62,14 @@ export class SessionManager {
     const config = parseSessionConfig(options.config);
 
     if (config.encryption.enabled && !options.encryptionKeyProvider) {
-      throw new Error('encryptionKeyProvider is required when config.encryption.enabled is true.');
+      throw new SessionConfigurationError(
+        'encryptionKeyProvider is required when config.encryption.enabled is true.',
+      );
     }
     if (!config.enabled) {
       // Constructing an enabled-by-default subsystem would surprise; the
       // manager is inert until config.enabled is explicitly set.
-      throw new Error(
+      throw new SessionConfigurationError(
         'Session subsystem is not enabled: set config.enabled = true to opt in.',
       );
     }
@@ -135,8 +138,8 @@ export class SessionManager {
  * Creates a session manager. Synchronous: use `await manager.init()` when
  * eager script preloading matters (first call latency).
  *
- * @throws {Error} when the config is invalid, encryption is enabled without
- *   a key provider, or sessions are not explicitly enabled.
+ * @throws {SessionConfigurationError} when the config is invalid, encryption
+ *   is enabled without a key provider, or sessions are not explicitly enabled.
  */
 export function createSessionManager(options: SessionManagerOptions): SessionManager {
   return new SessionManager(options);

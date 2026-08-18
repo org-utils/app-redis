@@ -36,35 +36,86 @@ import type { EncryptedSessionEnvelope } from './session-types.js';
  * versions to 32-byte keys for single-process deployments.
  */
 export interface SessionKeyProvider {
-  /** Returns the current encryption key and its version. */
-  getCurrentKey(): { keyVersion: number; key: Buffer };
+  /**
+   * Returns the encryption key used for all WRITES (new sessions, updates,
+   * re-encryption on touch). Called on every encryption.
+   *
+   * The version labels which key produced the ciphertext: it is stored in
+   * the session envelope (`k` field) so the corresponding key can be looked
+   * up later on read. Always return the current key here — never an
+   * arbitrary one.
+   *
+   * The key may be a 32-byte Buffer or a string (see {@link toKeyBuffer} for
+   * the accepted encodings). Whatever form is returned here must also be
+   * resolvable via {@link getKey} for the same version.
+   */
+  getCurrentKey(): { keyVersion: number; key: Buffer | string };
 
   /**
    * Returns the key for a specific version, or null when that version is no
-   * longer available (sessions encrypted with it become invalid).
+   * longer available. Called on every READ (decryption).
+   *
+   * Every session records the version it was encrypted with; this lookup
+   * resolves it. Returning null makes sessions encrypted with that version
+   * undecryptable — they surface as {@link SessionSerializationError}.
+   *
+   * This is what enables safe key rotation: when the current key changes,
+   * old keys must stay available here so previously written sessions keep
+   * decrypting. Only drop a version once every session using it has expired
+   * or been re-encrypted with the current key.
    */
-  getKey(keyVersion: number): Buffer | null;
+  getKey(keyVersion: number): Buffer | string | null;
+}
+
+/**
+ * Normalizes a key to a Buffer for use with AES-256-GCM.
+ *
+ * Buffers are returned as-is. Strings are decoded in priority order:
+ *  - 64 hex characters        -> hex
+ *  - base64 / base64url text that decodes to exactly 32 bytes -> base64
+ *  - anything else            -> utf8 (a 32-character passphrase)
+ *
+ * The decoded key must be 32 bytes (AES-256) for Node's crypto to accept
+ * it; {@link StaticSessionKeyProvider} validates this at construction.
+ */
+export function toKeyBuffer(key: Buffer | string): Buffer {
+  if (Buffer.isBuffer(key)) return key;
+  const trimmed = key.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    return Buffer.from(trimmed, 'hex');
+  }
+  if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(trimmed)) {
+    const decoded = Buffer.from(
+      trimmed.replace(/-/g, '+').replace(/_/g, '/'),
+      'base64',
+    );
+    if (decoded.length === 32) return decoded;
+  }
+  return Buffer.from(key, 'utf8');
 }
 
 /** A simple key provider for single-process deployments (env/CLI injection). */
 export class StaticSessionKeyProvider implements SessionKeyProvider {
   private readonly keys: ReadonlyMap<number, Buffer>;
 
-  constructor(keys: ReadonlyMap<number, Buffer>, private readonly currentVersion: number) {
+  constructor(keys: ReadonlyMap<number, Buffer | string>, private readonly currentVersion: number) {
     if (keys.size === 0) {
       throw new SessionConfigurationError('At least one encryption key is required.');
     }
     if (!keys.has(currentVersion)) {
       throw new SessionConfigurationError('currentVersion must be present in the key map.');
     }
-    for (const [version, key] of keys) {
+    const normalized = new Map<number, Buffer>();
+    for (const [version, raw] of keys) {
+      const key = toKeyBuffer(raw);
       if (key.length !== 32) {
         throw new SessionConfigurationError(
           `Encryption key version ${version} must be exactly 32 bytes (AES-256).`,
         );
       }
+      normalized.set(version, key);
     }
-    this.keys = new Map(keys);
+    this.keys = normalized;
   }
 
   getCurrentKey(): { keyVersion: number; key: Buffer } {
@@ -101,7 +152,7 @@ export function encryptPayload(
   const { keyVersion, key } = provider.getCurrentKey();
   const iv = randomBytes(IV_BYTES);
 
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const cipher = createCipheriv('aes-256-gcm', toKeyBuffer(key), iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const authTag = cipher.getAuthTag();
 
@@ -124,14 +175,16 @@ export function decryptPayload(
   envelope: Pick<EncryptedSessionEnvelope, 'k' | 'i' | 't' | 'c'>,
   provider: SessionKeyProvider,
 ): Buffer {
-  const key = provider.getKey(envelope.k);
+  const raw = provider.getKey(envelope.k);
 
-  if (!key) {
+  if (!raw) {
     throw new SessionSerializationError({
       reason: 'unknown_key_version',
       keyVersion: envelope.k,
     });
   }
+
+  const key = toKeyBuffer(raw);
 
   let iv: Buffer;
   let tag: Buffer;

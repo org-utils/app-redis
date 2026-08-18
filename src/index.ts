@@ -63,6 +63,7 @@ export {
 export {
   StaticSessionKeyProvider,
   createRandomSessionKeyProvider,
+  toKeyBuffer,
 } from './session/session-encryption.js';
 export type { SessionKeyProvider } from './session/session-encryption.js';
 export type {

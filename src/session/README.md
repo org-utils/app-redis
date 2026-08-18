@@ -475,8 +475,10 @@ const manager = createSessionManager({
 ```
 
 `SessionKeyProvider`: `getCurrentKey(): { keyVersion, key }` and
-`getKey(keyVersion): Buffer | null`. Keys must be exactly 32 bytes
-(AES-256). A `SessionKeyProvider` interface is exported for custom
+`getKey(keyVersion): Buffer | string | null`. Keys must be exactly 32 bytes
+(AES-256). Keys may be Buffers or strings — strings are decoded by
+`toKeyBuffer` in priority order: 64-char hex, base64/base64url decoding to
+32 bytes, then utf8. A `SessionKeyProvider` interface is exported for custom
 implementations; `StaticSessionKeyProvider` validates keys at construction.
 
 ---

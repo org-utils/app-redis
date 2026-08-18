@@ -19,6 +19,7 @@ export { SessionTokenManager } from './session-token.js';
 export {
   StaticSessionKeyProvider,
   createRandomSessionKeyProvider,
+  toKeyBuffer,
 } from './session-encryption.js';
 export {
   serializeSession,
