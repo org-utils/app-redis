@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.10
+
+### Patch Changes
+
+- [`9b7adf2`](https://github.com/org-utils/app-redis/commit/9b7adf27b06c5478ac929eaf10a4a930af11f59a) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - updated key configuratoin
+
 ## 0.0.9
 
 ### Patch Changes
