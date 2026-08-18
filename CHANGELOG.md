@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.11
+
+### Patch Changes
+
+- [`50dc64e`](https://github.com/org-utils/app-redis/commit/50dc64e0e2c023e664066cc0ff89560e263ac9a3) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - updated package
+
 ## 0.0.10
 
 ### Patch Changes
