@@ -259,7 +259,6 @@ the breaker is enabled — fail-fast `circuit_open` (thrown as
 | `userId` | required, 1–512 chars |
 | `deviceId` / `ipAddress` / `userAgent` | stored only when the matching `store*` config is on |
 | `metadata` | arbitrary JSON, bounded by `limits.maxMetadataSize` |
-| `jti` | advanced: caller-managed session id (must pass `validateFormat`) |
 | `idempotencyKey` | requires `enableCreateIdempotency`; 8–256 printable ASCII; **is** the token |
 
 Result: `{ token, session, replayed? }`. `token` is the raw token — hand it
@@ -268,7 +267,7 @@ the same `idempotencyKey` won; the same token resolves to the existing
 session. The claim is TTL-bounded (`min(60, ttl)`), so replay windows
 cannot grow forever.
 
-Throws: `SessionConfigurationError` (userId/idempotencyKey/jti invalid;
+Throws: `SessionConfigurationError` (userId/idempotencyKey invalid;
 idempotencyKey without the feature), `SessionInvalidError`
 (`metadata_too_large`, `metadata_cyclic`).
 

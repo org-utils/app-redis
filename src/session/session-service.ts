@@ -184,7 +184,6 @@ export class SessionService {
 
       let token: string;
       let jti: string;
-      let replayed = false;
 
       if (input.idempotencyKey !== undefined) {
         if (!this.config.enableCreateIdempotency) {
@@ -193,16 +192,8 @@ export class SessionService {
         validateIdempotencyToken(input.idempotencyKey);
         token = input.idempotencyKey;
         jti = this.deps.token.hash(token);
-      } else if (input.jti !== undefined) {
-        // Advanced: caller manages token lifecycle. The provided jti must be
-        // a valid session id; validate() with the caller's token resolves to
-        // it when tokenToJti(callerToken) === jti.
-        if (!this.deps.token.validateFormat(input.jti)) {
-          throw new SessionConfigurationError('Caller-supplied jti must be a valid session id.');
-        }
-        token = input.jti;
-        jti = input.jti;
-      } else {
+      }
+      else {
         token = this.deps.token.generate();
         jti = this.deps.token.hash(token);
       }
@@ -264,7 +255,6 @@ export class SessionService {
           if (input.ipAddress !== undefined) retry.ipAddress = input.ipAddress;
           if (input.userAgent !== undefined) retry.userAgent = input.userAgent;
           if (input.metadata !== undefined) retry.metadata = input.metadata;
-          if (input.jti !== undefined) retry.jti = input.jti;
           return this.create(retry);
         }
         return { token, session: existing, replayed: true };

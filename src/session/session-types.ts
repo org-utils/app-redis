@@ -25,7 +25,7 @@ export type SessionStatus = 'active' | 'consumed' | 'revoked';
  */
 export type SessionRecord = {
   /** Session id: SHA-256 hash of the raw session token, base64url encoded. */
-  jti: string;
+  jti: string ;
   /** Owner of the session. Identity field - immutable. */
   userId: string;
   /** Creation time (Unix seconds). Identity field - immutable. */
@@ -78,8 +78,6 @@ export type SessionCreateInput = {
   userAgent?: string;
   /** Arbitrary metadata (bounded by config.maxMetadataSize). */
   metadata?: Record<string, unknown>;
-  /** Caller-supplied session id. When omitted, a secure token is generated. */
-  jti?: string;
   /**
    * Idempotency key: when provided, a create that was already applied with
    * the same key returns the existing session instead of creating a duplicate.
