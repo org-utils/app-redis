@@ -1,5 +1,11 @@
 # app-redis
 
+## 0.0.13
+
+### Patch Changes
+
+- [`511c461`](https://github.com/org-utils/app-redis/commit/511c46175806896cc5571dc52a1976f1be59c05b) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - Updated session config types
+
 ## 0.0.12
 
 ### Patch Changes
