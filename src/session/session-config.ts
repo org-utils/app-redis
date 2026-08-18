@@ -10,7 +10,9 @@ import { RevocationStore } from './session-types.js';
 /* Secrets (encryption keys, Redis credentials) NEVER live in this config.     */
 /* Encryption keys are injected via a SessionKeyProvider at construction.      */
 /* -------------------------------------------------------------------------- */
-
+const TTL = 7 * 24 * 60 * 60;
+const IDLE_TIMEOUT = 24 * 60 * 60;
+const TOUCH_INTERVAL = 5 * 60;
 export const SessionStatusSchema = z.enum(['active', 'consumed', 'revoked']);
 
 /** How strictly session binding metadata (IP/UA/device) is enforced. */
@@ -141,15 +143,15 @@ export const SessionConfigSchema = z
     /**
      * Absolute session lifetime in seconds (the hard maximum). Redis TTL is
      * derived from this boundary; touch/rolling NEVER extends past it.
-     * Default: 30 days.
+     * Default: 7 days.
      */
-    ttl: z.number().int().min(1).default(2_592_000),
+    ttl: z.number().int().min(1).default(TTL),
 
     /**
      * Idle timeout in seconds. When null, sessions never expire through
      * inactivity. Default: 1 day.
      */
-    idleTimeout: z.number().int().min(1).nullable().default(86_400),
+    idleTimeout: z.number().int().min(1).nullable().default(IDLE_TIMEOUT),
 
     /**
      * Rolling sessions: valid activity extends the idle boundary (never the
@@ -162,7 +164,7 @@ export const SessionConfigSchema = z
      * Touch throttling in seconds: touch() performs no write when the last
      * activity is more recent than this interval. Default: 300.
      */
-    touchInterval: z.number().int().min(0).default(300),
+    touchInterval: z.number().int().min(0).default(TOUCH_INTERVAL),
 
     /**
      * Maximum concurrent sessions per user. 0 disables the limit.
