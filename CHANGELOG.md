@@ -2,6 +2,12 @@
 
 ## 0.0.9
 
+### Patch Changes
+
+- [`4d06be7`](https://github.com/org-utils/app-redis/commit/4d06be77cdb1c9c1c391f1ff5e092f5d93bec4f5) Thanks [@Anwarkamal143](https://github.com/Anwarkamal143)! - Updated package to add session
+
+## 0.0.9
+
 ### Minor Changes
 
 - **Session subsystem** (`createSessionManager`, `src/session/`): production session stack on top of the legacy stores — validation with fail-closed semantics (`SessionStorageError` = 503, never "invalid"), retry-safe rotation (idempotent `rotationNonce` replays), throttled touches, idle + absolute expiry, atomic per-user eviction ceilings, security versioning, optional AES-256-GCM encryption at rest with key rotation, optional jti index, fail-closed circuit breaker, metrics/health hooks, and idempotent creation. All Cluster-safe by construction (hash-tagged Lua scripts, slot-grouped pipelines).
