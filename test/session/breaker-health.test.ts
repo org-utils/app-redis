@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionCircuitBreaker } from '../../src/session/session-circuit-breaker.js';
 import { SessionHealthChecker } from '../../src/session/session-health.js';
 import { SessionConfigurationError } from '../../src/session/session-errors.js';
-import { parseSessionConfig } from '../../src/session/session-config.js';
+import { parseSessionConfig, TTL } from '../../src/session/session-config.js';
 
 const config = {
   enabled: true,
@@ -201,7 +201,7 @@ describe('session config', () => {
     const config = parseSessionConfig();
     expect(config.enabled).toBe(false);
     expect(config.namespace).toBe('authcore');
-    expect(config.ttl).toBe(2_592_000);
+    expect(config.ttl).toBe(TTL);
     expect(config.jtiIndex.enabled).toBe(false);
   });
 });

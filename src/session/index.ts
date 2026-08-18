@@ -33,6 +33,9 @@ export {
   parseSessionConfig,
   redactSessionConfig,
   SessionConfigSchema,
+  TTL,
+  IDLE_TIMEOUT,
+  TOUCH_INTERVAL,
 } from './session-config.js';
 export type {
   SessionConfig,

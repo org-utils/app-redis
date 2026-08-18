@@ -28,7 +28,13 @@ export {
   type SerializedCookie,
   type SerializedCookieAttributes,
 } from './session/session-cookie.js';
-export { parseSessionConfig, redactSessionConfig } from './session/session-config.js';
+export {
+  parseSessionConfig,
+  redactSessionConfig,
+  TTL,
+  IDLE_TIMEOUT,
+  TOUCH_INTERVAL,
+} from './session/session-config.js';
 export type {
   SessionConfig,
   SessionConfigInput,
